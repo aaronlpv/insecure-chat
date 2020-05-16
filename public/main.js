@@ -1,5 +1,13 @@
-$(function() {
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/\x00/g, '&#0;');
+}
 
+$(function() {
   // Initialize variables
   const $window = $(window);
   const $messages      = $('.messages'); // Messages area
@@ -8,18 +16,37 @@ $(function() {
   const $userList      = $('#user-list');
   const $roomList      = $('#room-list');
 
- 
-  // Prompt for setting a username
-  let username = prompt("What is your username?");
-  $usernameLabel.text(username);
-
   let connected = false;
+  let username  = undefined;
+  let password  = undefined;
+  let derivedKey = undefined;
+  let publicKey = undefined;
+  let privateKey = undefined;
   let socket = io();
 
   let modalShowing = false;
 
   $('#addChannelModal').on('hidden.bs.modal', () => modalShowing = false)
                        .on('show.bs.modal',   () => modalShowing = true);
+  $('#loginModal').on('hidden.bs.modal', () => modalShowing = false)
+                  .on('show.bs.modal',   () => modalShowing = true);
+
+  $('#login-button').click(() => {
+    var user = $('#username').val();
+    var pass = $('#password').val();
+    if(user == '') {
+        return error("Username required");
+    } else if(pass == '') {
+        return error("Password required");
+    }
+    deriveSecrets(user, pass).then((res) => {
+      username = user;
+      password = res.password;
+      derivedKey = res.key;
+      console.log("LOGIN");
+      socket.emit('join', {username: username, password: password});
+    })
+  })
 
 
   ///////////////
@@ -185,9 +212,9 @@ $(function() {
       <div class="message">
         <div class="message-avatar"></div>
         <div class="message-textual">
-          <span class="message-user">${msg.username}</span>
+          <span class="message-user">${escapeHtml(msg.username)}</span>
           <span class="message-time">${time}</span>
-          <span class="message-content">${msg.message}</span>
+          <span class="message-content">${escapeHtml(msg.message)}</span>
         </div>
       </div>
     `);
@@ -260,7 +287,15 @@ $(function() {
 
   // Whenever the server emits 'login', log the login message
   socket.on('login', (data) => {
+    if(data.error) {
+      error(data.error);
+      return;
+    }
     connected = true;
+    $('#loginModal').modal('hide');
+    $usernameLabel.text(username);
+
+    decryptPrivateKey(derivedKey, data.privateKey, data.iv).then((key) => { privateKey = key; });
 
     updateUsers(data.users);
     updateRooms(data.rooms);
@@ -319,18 +354,19 @@ $(function() {
   // Connection //
   ////////////////
 
-  socket.on('connect', () => {
-    socket.emit('join', username)
-  });
+  // socket.on('connect', () => {
+  //   socket.emit('join', username)
+  // });
 
-  socket.on('disconnect', () => {
-  });
+  // socket.on('disconnect', () => {
+  // });
 
-  socket.on('reconnect', () => {
-    socket.emit('join', username);
-  });
+  // socket.on('reconnect', () => {
+  //   socket.emit('join', username);
+  // });
 
-  socket.on('reconnect_error', () => {
-  });
+  // socket.on('reconnect_error', () => {
+  // });
 
+  $('#loginModal').modal('show');
 });

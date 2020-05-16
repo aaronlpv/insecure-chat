@@ -54,6 +54,32 @@
 
   </div>
 
+  <div class="modal fade" id="loginModal" data-backdrop="static" data-keyboard="false" tabindex="-1" role="dialog">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Login</h5>
+        </div>
+        <div class="modal-body">
+          <form>
+            <div class="form-group">
+               <label for="username">Username</label>
+               <input type="text" id="username" class="form-control" placeholder="Enter username">
+            </div>
+            <div class="form-group">
+               <label for="password">Password</label>
+               <input type="password" id="password" class="form-control" placeholder="Enter Password">
+            </div>
+            <div class="error" id="error"></div>
+          </form>
+          <div class="modal-footer">
+            <button id="login-button" class="btn btn-primary">LOGIN</button>
+            <a href="/register" class="btn btn-secondary" role="button">REGISTER</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="modal fade" id="addChannelModal" tabindex="-1" role="dialog" aria-labelledby="addchannellbl" aria-hidden="true">
     <div class="modal-dialog" role="document">
@@ -110,8 +136,6 @@
     </div>
   </div>
 
-
-
   <div class="modal fade" id="addUserModal" tabindex="-1" role="dialog" aria-labelledby="adduserlbl" aria-hidden="true">
     <div class="modal-dialog" role="document">
       <div class="modal-content">
@@ -135,6 +159,7 @@
   <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="/main.js"></script>
+  <script src="/auth.js"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js"></script>
   <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js"></script>

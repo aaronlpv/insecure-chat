@@ -5,9 +5,22 @@ const path    = require('path');
 const server  = require('http').createServer(app);
 const io      = require('socket.io')(server);
 const port    = process.env.PORT || 3000;
+const crypto = require('crypto');
 
 const Users   = require('./users.js');
 const Rooms   = require('./rooms.js');
+const Db      = require('./db.js');
+
+Db.openDatabase();
+
+process.on('SIGINT', () => {
+  console.log("Bye");
+  Db.closeDatabase();
+  process.exit();
+});
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }))
 
 // Load application config/state
 require('./basicstate.js').setup(Users,Rooms);
@@ -18,7 +31,23 @@ server.listen(port, () => {
 });
 
 // Routing for client-side files
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {extensions:['html']}));
+app.post('/register', (req, res) => {
+  const username = req.body.username;
+  const password = req.body.password;
+  console.log(req.body);
+  if(!username || !password) {
+    res.json({"status": "BAD", "error": "Malformed request"});
+  } else {
+    var salt = crypto.randomBytes(64);
+    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
+      if(err) throw err;
+      Db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), req.body.iv, req.body.publicKey, req.body.privateKey)
+      .then(() => { return res.json({"status": "OK"})})
+      .catch((e) => { return res.json({status: "BAD", "error": "Username taken"}) });
+    });
+  }
+})
 
 
 ///////////////////////////////
@@ -261,30 +290,51 @@ io.on('connection', (socket) => {
   // user join //
   ///////////////
 
-  socket.on('join', (p_username) => {
+  socket.on('join', (data) => {
     if (loggedIn) 
       return;
 
-    username = p_username;
-    loggedIn = true;
-    socketmap[username] = socket;
+    username = data.username;
 
-    const user = Users.getUser(username) || newUser(username);
-    
-    const rooms = user.getSubscriptions().map(s => {
-      socket.join('room' + s);
-      return Rooms.getRoom(s);
-    });
+    Db.getUserByName(username).then((dbUser) => {
+      if(!dbUser) {
+        return socket.emit('login', {
+          error: "Invalid password"
+        });
+      }
 
-    const publicChannels = Rooms.getRooms().filter(r => !r.direct && !r.private);
-
-    socket.emit('login', {
-      users: Users.getUsers().map(u => ({username: u.name, active: u.active})),
-      rooms : rooms,
-      publicChannels: publicChannels
-    });
-
-    setUserActiveState(socket, username, true);
+      crypto.scrypt(data.password, Buffer.from(dbUser.Salt, 'hex'), 64, (err, derivedKey) => {
+        if(err) throw err;
+        if(derivedKey.toString('hex') != dbUser.Password) {
+          socket.emit('login', {
+            error: "Invalid password"
+          });
+        } else {
+          loggedIn = true;
+          socketmap[username] = socket;
+      
+          const user = Users.getUser(username) || newUser(username);
+          
+          const rooms = user.getSubscriptions().map(s => {
+            socket.join('room' + s);
+            return Rooms.getRoom(s);
+          });
+      
+          const publicChannels = Rooms.getRooms().filter(r => !r.direct && !r.private);
+      
+          socket.emit('login', {
+            users: Users.getUsers().map(u => ({username: u.name, active: u.active})),
+            rooms : rooms,
+            publicChannels: publicChannels,
+            publicKey: dbUser.PubKey,
+            privateKey: dbUser.PrivKey,
+            iv: dbUser.IV
+          });
+      
+          setUserActiveState(socket, username, true);
+        }
+      });
+    })
   });
 
   /////////////////
