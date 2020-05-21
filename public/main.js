@@ -29,7 +29,13 @@ $(function() {
   $('#addChannelModal').on('hidden.bs.modal', () => modalShowing = false)
                        .on('show.bs.modal',   () => modalShowing = true);
   $('#loginModal').on('hidden.bs.modal', () => modalShowing = false)
-                  .on('show.bs.modal',   () => modalShowing = true);
+                  .on('show.bs.modal',   () => 
+  {
+    modalShowing = true;
+    setTimeout(function (){
+      $('#username').focus();
+  }, 1000);
+  });
 
   $('#login-button').click(() => {
     var user = $('#username').val();

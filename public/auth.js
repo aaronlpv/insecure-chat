@@ -136,7 +136,6 @@ async function decryptPrivateKey(derivKey, encPrivKey, iv) {
 }
 
 function check_password() {
-    const enc = new TextEncoder();
     var username = $('#username').val();
     var password = $('#password').val();
     var confirm  = $('#confirm-password').val();
@@ -158,7 +157,7 @@ function check_password() {
         return fet.json();
     }).then((res) => {
         console.log(res);
-        if(res.status == "OK") {
+        if(!res.error) {
             $(location).attr('href', "/");
         } else {
             error(res.error);

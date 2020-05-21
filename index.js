@@ -22,9 +22,6 @@ process.on('SIGINT', () => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }))
 
-// Load application config/state
-require('./basicstate.js').setup(Users,Rooms);
-
 // Start server
 server.listen(port, () => {
   console.log('Server listening at port %d', port);
@@ -37,14 +34,14 @@ app.post('/register', (req, res) => {
   const password = req.body.password;
   console.log(req.body);
   if(!username || !password) {
-    res.json({"status": "BAD", "error": "Malformed request"});
+    res.json({"error": "Malformed request"});
   } else {
     var salt = crypto.randomBytes(64);
     crypto.scrypt(password, salt, 64, (err, derivedKey) => {
       if(err) throw err;
       Db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), req.body.iv, req.body.publicKey, req.body.privateKey)
-      .then(() => { return res.json({"status": "OK"})})
-      .catch((e) => { return res.json({status: "BAD", "error": "Username taken"}) });
+      .then(() => { return res.json({})})
+      .catch((e) => { return res.json({"error": "Username taken"}) });
     });
   }
 })
@@ -326,8 +323,8 @@ io.on('connection', (socket) => {
             users: Users.getUsers().map(u => ({username: u.name, active: u.active})),
             rooms : rooms,
             publicChannels: publicChannels,
-            publicKey: dbUser.PubKey,
-            privateKey: dbUser.PrivKey,
+            publicKey: dbUser.Pubkey,
+            privateKey: dbUser.Privkey,
             iv: dbUser.IV
           });
       
