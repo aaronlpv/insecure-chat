@@ -5,17 +5,14 @@ const path    = require('path');
 const server  = require('http').createServer(app);
 const io      = require('socket.io')(server);
 const port    = process.env.PORT || 3000;
-const crypto = require('crypto');
+const crypto  = require('crypto');
+const db      = require('./db.js');
 
-const Users   = require('./users.js');
-const Rooms   = require('./rooms.js');
-const Db      = require('./db.js');
-
-Db.openDatabase();
+db.openDatabase();
 
 process.on('SIGINT', () => {
   console.log("Bye");
-  Db.closeDatabase();
+  db.closeDatabase();
   process.exit();
 });
 
@@ -25,26 +22,147 @@ app.use(express.urlencoded({ extended: true }))
 // Start server
 server.listen(port, () => {
   console.log('Server listening at port %d', port);
+  console.log('Dev link: http://localhost:3000');
 });
 
 // Routing for client-side files
 app.use(express.static(path.join(__dirname, 'public'), {extensions:['html']}));
+
 app.post('/register', (req, res) => {
+  // TODO: broadcast room joins
   const username = req.body.username;
   const password = req.body.password;
-  console.log(req.body);
   if(!username || !password) {
-    res.json({"error": "Malformed request"});
+    res.status(400).json({"error": "Bad request"});
   } else {
     var salt = crypto.randomBytes(64);
     crypto.scrypt(password, salt, 64, (err, derivedKey) => {
       if(err) throw err;
-      Db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), req.body.iv, req.body.publicKey, req.body.privateKey)
-      .then(() => { return res.json({})})
+      db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), req.body.iv, req.body.publicKey, req.body.privateKey)
+      .then(() => { return res.json({})} )
       .catch((e) => { return res.json({"error": "Username taken"}) });
     });
   }
 })
+
+function db_room(room) {
+  return {
+    id: room.ChannelID,
+    name: room.ChannelName,
+    description: room.Description,
+    private: room.Type == 'O',
+    direct: room.Type == 'D',
+    forceMembership: room.ForceJoin
+  }
+}
+
+function db_user(user) {
+  return { 
+    id: user.UserID, 
+    username: user.Username,
+    active: isActive(user.UserID),
+    publicKey: user.Pubkey,
+  };
+}
+
+async function db_room_with_details(channel, userid, moveTo) {
+  var db_channel = db_room(channel);
+  var [participants, msgs] = await Promise.all([db.getParticipantsByChannel(channel.ChannelID),
+                                                db.getChannelMessagesForUser(channel.ChannelID, userid)]);
+  db_channel.members = participants.map((row) => row.UserID);
+  db_channel.history = msgs.map((row) => {
+    return {
+      userid: row.UserID,
+      message: row.Message,
+      room: row.ChannelID,
+      time: row.TimeSent,
+    }
+  });
+  if(moveTo){
+    db_channel.moveto = moveTo;
+  }
+  return db_channel;
+}
+
+async function getChannels(userid) {
+  var channels = await db.getChannelsByUser(userid);
+  var new_channels = channels.map((ch) => db_room_with_details(ch, userid));
+  return await Promise.all(new_channels);
+}
+
+async function joinChannel(userid, socket, channelid) {
+  var channel = await db.getChannel(channelid);
+  if(channel && channel.Type == 'O') {
+    await addParticipant(channelid, userid);
+  }
+}
+
+async function leaveChannel(userid, socket, channelid) {
+  var channel = await db.getChannel(channelid);
+  if(channel && channel.Type != 'D' && !channel.ForceJoin) {
+    await db.removeParticipant(channelid, userid);
+    var participants = await db.getParticipantsByChannel(channelid);
+    socket.leave('room' + channelid);
+    sendToRoom(channelid, 'update_members', {
+      room: channelid,
+      members: participants.map((row) => row.UserID)
+    });
+    socket.emit('remove_room', {id: channelid});
+  }
+}
+
+async function createChannel(name, description, type) {
+  var chan = await db.addChannel(name, description, type, false);
+  if(type == 'O') {
+    io.emit('add_public_channel', {
+      id: chan.lastID,
+      name: name
+    });
+  }
+  return chan;
+}
+
+async function addParticipant(channel, user) {
+  var new_member = await db.addParticipant(channel, user);
+  if(new_member) {
+    if(isActive(user)){
+      var chan = await db.getChannel(channel);
+      socketmap[user].join('room' + channel);
+      socketmap[user].emit('update_room', await db_room_with_details(chan, user, true));
+    }
+    var participants = await db.getParticipantsByChannel(channel);
+    sendToRoom(channel, 'update_members', {
+      room: channel,
+      members: participants.map((row) => row.UserID)
+    });
+  }
+}
+
+async function addChannel(userid, socket, channelname, channeldesc, private) {
+  var chan = await createChannel(channelname, channeldesc, private ? 'C' : 'O');
+  if(chan) {
+    await addParticipant(chan.lastID, userid);
+  }
+}
+
+async function addUserToChannel(userid, socket, channelid, usertoadd) {
+  var member = db.isParticipantInChannel(userid, channelid);
+  if(member) {
+    await addParticipant(channelid, usertoadd);
+  }
+}
+
+async function requestDirectRoom(userid, socket, to) {
+  var [to_user, dms] = await Promise.all([db.getUserById(to), db.getDirectChannel(userid, to)]);
+  if(to_user){
+    if(dms) {
+      socket.emit('move_to_room', { id: dms.ChannelID });
+    } else {
+      var room = await createChannel(`Direct-${userid}-${to}`, "", "D");
+      await Promise.all([addParticipant(room.lastID, userid), addParticipant(room.lastID, to)]);
+    }
+  }
+}
 
 
 ///////////////////////////////
@@ -52,110 +170,23 @@ app.post('/register', (req, res) => {
 ///////////////////////////////
 
 function sendToRoom(room, event, data) {
-  io.to('room' + room.getId()).emit(event, data);
+  io.to('room' + room).emit(event, data);
 }
 
-function newUser(name) {
-  const user = Users.addUser(name);
-  const rooms = Rooms.getForcedRooms();
-
-  rooms.forEach(room => {
-    addUserToRoom(user, room);
-  });
-
-  return user;
-}
-
-function newRoom(name, user, options) {
-  const room = Rooms.addRoom(name, options);
-  addUserToRoom(user, room);
-  return room;
-}
-
-function newChannel(name, description, private, user) {
-  return newRoom(name, user, {
-    description: description,
-    private: private
-  });
-}
-
-function newDirectRoom(user_a, user_b) {
-  const room = Rooms.addRoom(`Direct-${user_a.name}-${user_b.name}`, {
-    direct: true,
-    private: true,
-  });
-
-  addUserToRoom(user_a, room);
-  addUserToRoom(user_b, room);
-
-  return room;
-}
-
-function getDirectRoom(user_a, user_b) {
-  const rooms = Rooms.getRooms().filter(r => r.direct 
-    && (
-      (r.members[0] == user_a.name && r.members[1] == user_b.name) ||
-      (r.members[1] == user_a.name && r.members[0] == user_b.name)
-    ));
-
-  if (rooms.length == 1)
-    return rooms[0];
-  else
-    return newDirectRoom(user_a, user_b);
-}
-
-function addUserToRoom(user, room) {
-  user.addSubscription(room);
-  room.addMember(user);
-
-  sendToRoom(room, 'update_user', {
-    room: room.getId(),
-    username: user,
-    action: 'added',
-    members: room.getMembers()
-  });
-}
-
-function removeUserFromRoom(user, room) {
-  user.removeSubscription(room);
-  room.removeMember(user);
-
-  sendToRoom(room, 'update_user', {
-    room: room.getId(),
-    username: user,
-    action: 'removed',
-    members: room.getMembers()
-  });
-}
-
-function addMessageToRoom(roomId, username, msg) {
-  const room = Rooms.getRoom(roomId);
-
-  msg.time = new Date().getTime();
-
-  if (room) {
-    sendToRoom(room, 'new message', {
-      username: username,
-      message: msg.message,
-      room: msg.room,
-      time: msg.time,
-      direct: room.direct
-    });
-
-    room.addMessage(msg);
+async function addMessageToRoom(userid, socket, roomid, msg) {
+  var time = Date.now();
+  var member = await db.isParticipantInChannel(userid, roomid);
+  if(member) {
+    var sent = await db.addMessage(userid, roomid, msg);
+    if(sent){
+      sendToRoom(roomid, 'new_message', {
+        userid: userid,
+        message: msg,
+        room: roomid,
+        time: time
+      });
+    }
   }
-}
-
-function setUserActiveState(socket, username, state) {
-  const user = Users.getUser(username);
-
-  if (user)
-    user.setActiveState(state);
-  
-  socket.broadcast.emit('user_state_change', {
-    username: username,
-    active: state
-  });
 }
 
 ///////////////////////////
@@ -164,122 +195,49 @@ function setUserActiveState(socket, username, state) {
 
 const socketmap = {};
 
+function isActive(userid) {
+  return !!socketmap[userid];
+}
+
 io.on('connection', (socket) => {
   let loggedIn = false;
   let username = false;
-  
-  ///////////////////////
-  // incomming message //
-  ///////////////////////
+  let userid;
 
-  socket.on('new message', (msg) => {
-    if (loggedIn) {
-      console.log(msg);
-      addMessageToRoom(msg.room, username, msg);
+  socket.on('new_message', (msg) => {
+    if (loggedIn && msg.room && msg.message) {
+      addMessageToRoom(userid, socket, msg.room, msg.message);
     }
   });
 
-  /////////////////////////////
-  // request for direct room //
-  /////////////////////////////
-
-
   socket.on('request_direct_room', req => {
-    if (loggedIn) {
-      const a = Users.getUser(req.to);
-      const b = Users.getUser(username);
-
-      if(a && b) {
-        const room = getDirectRoom(a, b);
-        const roomCID = 'room' + room.getId();
-        socket.join(roomCID);
-        if (socketmap[a.name])
-         socketmap[a.name].join(roomCID);
-
-        socket.emit('update_room', {
-          room: room,
-          moveto: true
-        });
-      }
+    if (loggedIn && req.to) {
+      requestDirectRoom(userid, socket, req.to);
     }
   });
 
   socket.on('add_channel', req => {
-    if (loggedIn) {
-      const user = Users.getUser(username);
-      console.log(req);
-      const room = newChannel(req.name, req.description, req.private, user);
-      const roomCID = 'room' + room.getId();
-      socket.join(roomCID);
-
-      socket.emit('update_room', {
-        room: room,
-        moveto: true
-      });
-
-      if (!room.private) {
-        const publicChannels = Rooms.getRooms().filter(r => !r.direct && !r.private);
-        socket.broadcast.emit('update_public_channels', {
-          publicChannels: publicChannels
-        });
-      }
+    if (loggedIn && req.name && req.private !== undefined) {
+      addChannel(userid, socket, req.name, req.description, req.private);
     }
   });
 
   socket.on('join_channel', req => {
-    if (loggedIn) {
-      const user = Users.getUser(username);
-      const room = Rooms.getRoom(req.id)
-
-      if(!room.direct && !room.private) {
-        addUserToRoom(user, room);
-        
-        const roomCID = 'room' + room.getId();
-        socket.join(roomCID);
-
-        socket.emit('update_room', {
-          room: room,
-          moveto: true
-        });
-      }
+    if (loggedIn && req.id) {
+      joinChannel(userid, socket, req.id);
     }
   });
 
   
   socket.on('add_user_to_channel', req => {
-    if (loggedIn) {
-      const user = Users.getUser(req.user);
-      const room = Rooms.getRoom(req.channel)
-
-      if(!room.direct) {
-        addUserToRoom(user, room);
-        
-        const roomCID = 'room' + room.getId();
-        socketmap[user.name].join(roomCID);
-
-        socketmap[user.name].emit('update_room', {
-          room: room,
-          moveto: false
-        });
-      }
+    if (loggedIn && req.channel && req.user) {
+      addUserToChannel(userid, socket, req.channel, req.user);
     }
   });
 
   socket.on('leave_channel', req => {
-    if (loggedIn) {
-      const user = Users.getUser(username);
-      const room = Rooms.getRoom(req.id)
-
-      if(!room.direct && !room.forceMembership) {
-        removeUserFromRoom(user, room);
-        
-        const roomCID = 'room' + room.getId();
-        socket.leave(roomCID);
-
-        socket.emit('remove_room', {
-          room: room.getId()
-        });
-      }
+    if (loggedIn && req.id) {
+      leaveChannel(userid, socket, req.id);
     }
   });
 
@@ -288,18 +246,21 @@ io.on('connection', (socket) => {
   ///////////////
 
   socket.on('join', (data) => {
-    if (loggedIn) 
+    if (loggedIn || !data.username || !data.password) 
       return;
 
     username = data.username;
-
-    Db.getUserByName(username).then((dbUser) => {
+    db.getUserByName(username).then((dbUser) => {
       if(!dbUser) {
         return socket.emit('login', {
           error: "Invalid password"
         });
       }
-
+      if(isActive(dbUser.UserID)) {
+        return socket.emit('login', {
+          error: "Already logged in"
+        });
+      }
       crypto.scrypt(data.password, Buffer.from(dbUser.Salt, 'hex'), 64, (err, derivedKey) => {
         if(err) throw err;
         if(derivedKey.toString('hex') != dbUser.Password) {
@@ -308,27 +269,27 @@ io.on('connection', (socket) => {
           });
         } else {
           loggedIn = true;
-          socketmap[username] = socket;
-      
-          const user = Users.getUser(username) || newUser(username);
-          
-          const rooms = user.getSubscriptions().map(s => {
-            socket.join('room' + s);
-            return Rooms.getRoom(s);
+          userid = dbUser.UserID;
+          socketmap[userid] = socket;
+          Promise.all([
+            getChannels(userid),
+            db.getPublicChannels(),
+            db.getUsers()
+          ]).then(([rooms, publics, dbUsers]) => {
+            let publicChannels = publics.map(db_room);
+            let users = dbUsers.map(db_user);
+            rooms.forEach((room) => socket.join('room' + room.id));
+            socket.emit('login', {
+              id: userid,
+              users: users,
+              rooms : rooms,
+              publicChannels: publicChannels,
+              publicKey: dbUser.Pubkey,
+              privateKey: dbUser.Privkey,
+              iv: dbUser.IV
+            });
           });
-      
-          const publicChannels = Rooms.getRooms().filter(r => !r.direct && !r.private);
-      
-          socket.emit('login', {
-            users: Users.getUsers().map(u => ({username: u.name, active: u.active})),
-            rooms : rooms,
-            publicChannels: publicChannels,
-            publicKey: dbUser.Pubkey,
-            privateKey: dbUser.Privkey,
-            iv: dbUser.IV
-          });
-      
-          setUserActiveState(socket, username, true);
+          socket.broadcast.emit("user_state_change", db_user(dbUser));
         }
       });
     })
@@ -339,17 +300,12 @@ io.on('connection', (socket) => {
   /////////////////
 
   socket.on('disconnect', () => {
-    if (loggedIn)
-      setUserActiveState(socket, username, false);
+    if (loggedIn){
+      delete socketmap[userid];
+      loggedIn = false;
+      db.getUserById(userid).then((user) => {
+        socket.broadcast.emit("user_state_change", db_user(user));
+      });
+    }
   });
-
-  ////////////////
-  // reconnects //
-  ////////////////
-
-  socket.on('reconnect', () => {
-    if (loggedIn)
-      setUserActiveState(socket, username, true);
-  });
-
 });
