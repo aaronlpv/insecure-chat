@@ -1,6 +1,8 @@
+'use strict';
 // Setup basic express server
 const express = require('express');
 const app     = express();
+const helmet  = require('helmet');
 const path    = require('path');
 const server  = require('http').createServer(app);
 const io      = require('socket.io')(server);
@@ -11,13 +13,14 @@ const db      = require('./db.js');
 db.openDatabase();
 
 process.on('SIGINT', () => {
-  console.log("Bye");
+  console.log('Bye');
   db.closeDatabase();
   process.exit();
 });
 
+app.use(helmet());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }))
+app.use(express.urlencoded({ extended: true }));
 
 // Start server
 server.listen(port, () => {
@@ -28,19 +31,25 @@ server.listen(port, () => {
 // Routing for client-side files
 app.use(express.static(path.join(__dirname, 'public'), {extensions:['html']}));
 
-app.post('/register', (req, res) => {
-  // TODO: broadcast room joins
+app.post('/register', async (req, res) => {
   const username = req.body.username;
   const password = req.body.password;
   if(!username || !password) {
-    res.status(400).json({"error": "Bad request"});
+    res.status(400).json({error: 'Bad request'});
   } else {
-    var salt = crypto.randomBytes(64);
-    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
+    const salt = crypto.randomBytes(64);
+    crypto.scrypt(password, salt, 64, async (err, derivedKey) => {
       if(err) throw err;
-      db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), req.body.iv, req.body.publicKey, req.body.privateKey)
-      .then(() => { return res.json({})} )
-      .catch((e) => { return res.json({"error": "Username taken"}) });
+      try {
+        var user = await db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), 
+          req.body.iv, req.body.publicKey, req.body.privateKey);
+      } catch {
+        return res.json({error: 'Username taken'})
+      }
+      const new_user = await db.getUserById(user.lastID);
+      io.emit('user_state_change', db_user(new_user));
+      await Promise.all((await db.getForceChannels()).map(c => addParticipant(c.ChannelID, user.lastID)));
+      res.json({});
     });
   }
 })
@@ -66,9 +75,9 @@ function db_user(user) {
 }
 
 async function db_room_with_details(channel, userid, moveTo) {
-  var db_channel = db_room(channel);
-  var [participants, msgs] = await Promise.all([db.getParticipantsByChannel(channel.ChannelID),
-                                                db.getChannelMessagesForUser(channel.ChannelID, userid)]);
+  const db_channel = db_room(channel);
+  const [participants, msgs] = await Promise.all([db.getParticipantsByChannel(channel.ChannelID),
+                                                  db.getChannelMessagesForUser(channel.ChannelID, userid)]);
   db_channel.members = participants.map((row) => row.UserID);
   db_channel.history = msgs.map((row) => {
     return {
@@ -84,35 +93,12 @@ async function db_room_with_details(channel, userid, moveTo) {
   return db_channel;
 }
 
-async function getChannels(userid) {
-  var channels = await db.getChannelsByUser(userid);
-  var new_channels = channels.map((ch) => db_room_with_details(ch, userid));
-  return await Promise.all(new_channels);
-}
-
-async function joinChannel(userid, socket, channelid) {
-  var channel = await db.getChannel(channelid);
-  if(channel && channel.Type == 'O') {
-    await addParticipant(channelid, userid);
-  }
-}
-
-async function leaveChannel(userid, socket, channelid) {
-  var channel = await db.getChannel(channelid);
-  if(channel && channel.Type != 'D' && !channel.ForceJoin) {
-    await db.removeParticipant(channelid, userid);
-    var participants = await db.getParticipantsByChannel(channelid);
-    socket.leave('room' + channelid);
-    sendToRoom(channelid, 'update_members', {
-      room: channelid,
-      members: participants.map((row) => row.UserID)
-    });
-    socket.emit('remove_room', {id: channelid});
-  }
+async function getChannelsForUser(userid) {
+  return await Promise.all((await db.getChannelsByUser(userid)).map((ch) => db_room_with_details(ch, userid)));
 }
 
 async function createChannel(name, description, type) {
-  var chan = await db.addChannel(name, description, type, false);
+  const chan = await db.addChannel(name, description, type, false);
   if(type == 'O') {
     io.emit('add_public_channel', {
       id: chan.lastID,
@@ -123,47 +109,20 @@ async function createChannel(name, description, type) {
 }
 
 async function addParticipant(channel, user) {
-  var new_member = await db.addParticipant(channel, user);
-  if(new_member) {
-    if(isActive(user)){
-      var chan = await db.getChannel(channel);
-      socketmap[user].join('room' + channel);
-      socketmap[user].emit('update_room', await db_room_with_details(chan, user, true));
-    }
-    var participants = await db.getParticipantsByChannel(channel);
-    sendToRoom(channel, 'update_members', {
-      room: channel,
-      members: participants.map((row) => row.UserID)
-    });
+  try {
+    await db.addParticipant(channel, user);
+  } catch { return; }
+  if(isActive(user)){
+    const chan = await db.getChannel(channel);
+    socketmap[user].join('room' + channel);
+    socketmap[user].emit('update_room', await db_room_with_details(chan, user, true));
   }
+  const participants = await db.getParticipantsByChannel(channel);
+  sendToRoom(channel, 'update_members', {
+    room: channel,
+    members: participants.map((row) => row.UserID)
+  });
 }
-
-async function addChannel(userid, socket, channelname, channeldesc, private) {
-  var chan = await createChannel(channelname, channeldesc, private ? 'C' : 'O');
-  if(chan) {
-    await addParticipant(chan.lastID, userid);
-  }
-}
-
-async function addUserToChannel(userid, socket, channelid, usertoadd) {
-  var member = db.isParticipantInChannel(userid, channelid);
-  if(member) {
-    await addParticipant(channelid, usertoadd);
-  }
-}
-
-async function requestDirectRoom(userid, socket, to) {
-  var [to_user, dms] = await Promise.all([db.getUserById(to), db.getDirectChannel(userid, to)]);
-  if(to_user){
-    if(dms) {
-      socket.emit('move_to_room', { id: dms.ChannelID });
-    } else {
-      var room = await createChannel(`Direct-${userid}-${to}`, "", "D");
-      await Promise.all([addParticipant(room.lastID, userid), addParticipant(room.lastID, to)]);
-    }
-  }
-}
-
 
 ///////////////////////////////
 // Chatroom helper functions //
@@ -171,22 +130,6 @@ async function requestDirectRoom(userid, socket, to) {
 
 function sendToRoom(room, event, data) {
   io.to('room' + room).emit(event, data);
-}
-
-async function addMessageToRoom(userid, socket, roomid, msg) {
-  var time = Date.now();
-  var member = await db.isParticipantInChannel(userid, roomid);
-  if(member) {
-    var sent = await db.addMessage(userid, roomid, msg);
-    if(sent){
-      sendToRoom(roomid, 'new_message', {
-        userid: userid,
-        message: msg,
-        room: roomid,
-        time: time
-      });
-    }
-  }
 }
 
 ///////////////////////////
@@ -201,43 +144,81 @@ function isActive(userid) {
 
 io.on('connection', (socket) => {
   let loggedIn = false;
-  let username = false;
+  let username;
   let userid;
 
-  socket.on('new_message', (msg) => {
+  socket.on('new_message', async msg => {
     if (loggedIn && msg.room && msg.message) {
-      addMessageToRoom(userid, socket, msg.room, msg.message);
+      const time = Date.now();
+      const member = await db.isParticipantInChannel(userid, msg.room);
+      if(member) {
+        const sent = await db.addMessage(userid, msg.room, msg.message);
+        if(sent){
+          sendToRoom(msg.room, 'new_message', {
+            userid: userid,
+            message: msg.message,
+            room: msg.room,
+            time: time
+          });
+        }
+      }
     }
   });
 
-  socket.on('request_direct_room', req => {
+  socket.on('request_direct_room', async req => {
     if (loggedIn && req.to) {
-      requestDirectRoom(userid, socket, req.to);
+      const [to_user, dms] = await Promise.all([db.getUserById(req.to), db.getDirectChannel(userid, req.to)]);
+      if(to_user){
+        if(dms) {
+          socket.emit('move_to_room', { id: dms.ChannelID });
+        } else {
+          const room = await createChannel(`Direct-${userid}-${req.to}`, '', 'D');
+          await addParticipant(room.lastID, userid);
+          await addParticipant(room.lastID, req.to);
+        }
+      }
     }
   });
 
-  socket.on('add_channel', req => {
+  socket.on('add_channel', async req => {
     if (loggedIn && req.name && req.private !== undefined) {
-      addChannel(userid, socket, req.name, req.description, req.private);
+      const chan = await createChannel(req.name, req.description, req.private ? 'C' : 'O');
+      if(chan) {
+        await addParticipant(chan.lastID, userid);
+      }
     }
   });
 
-  socket.on('join_channel', req => {
+  socket.on('join_channel', async req => {
     if (loggedIn && req.id) {
-      joinChannel(userid, socket, req.id);
+      const channel = await db.getChannel(req.id);
+      if(channel && channel.Type == 'O') {
+        await addParticipant(req.id, userid);
+      }
     }
   });
 
   
-  socket.on('add_user_to_channel', req => {
+  socket.on('add_user_to_channel', async req => {
     if (loggedIn && req.channel && req.user) {
-      addUserToChannel(userid, socket, req.channel, req.user);
+      if(db.isParticipantInChannel(userid, req.channel)) {
+        await addParticipant(req.channel, req.user);
+      }
     }
   });
 
-  socket.on('leave_channel', req => {
+  socket.on('leave_channel', async req => {
     if (loggedIn && req.id) {
-      leaveChannel(userid, socket, req.id);
+      const channel = await db.getChannel(req.id);
+      if(channel && channel.Type != 'D' && !channel.ForceJoin &&
+          (await db.removeParticipant(req.id, userid)).changes > 0) {
+        socket.leave('room' + req.id);
+        sendToRoom(req.id, 'update_members', {
+          room: req.id,
+          members: (await db.getParticipantsByChannel(req.id)).map((row) => row.UserID)
+        });
+        socket.emit('remove_room', {id: req.id});
+      }
     }
   });
 
@@ -245,54 +226,53 @@ io.on('connection', (socket) => {
   // user join //
   ///////////////
 
-  socket.on('join', (data) => {
+  socket.on('join', async data => {
     if (loggedIn || !data.username || !data.password) 
       return;
 
     username = data.username;
-    db.getUserByName(username).then((dbUser) => {
-      if(!dbUser) {
-        return socket.emit('login', {
-          error: "Invalid password"
-        });
-      }
-      if(isActive(dbUser.UserID)) {
-        return socket.emit('login', {
-          error: "Already logged in"
-        });
-      }
-      crypto.scrypt(data.password, Buffer.from(dbUser.Salt, 'hex'), 64, (err, derivedKey) => {
-        if(err) throw err;
-        if(derivedKey.toString('hex') != dbUser.Password) {
-          socket.emit('login', {
-            error: "Invalid password"
-          });
-        } else {
-          loggedIn = true;
-          userid = dbUser.UserID;
-          socketmap[userid] = socket;
-          Promise.all([
-            getChannels(userid),
-            db.getPublicChannels(),
-            db.getUsers()
-          ]).then(([rooms, publics, dbUsers]) => {
-            let publicChannels = publics.map(db_room);
-            let users = dbUsers.map(db_user);
-            rooms.forEach((room) => socket.join('room' + room.id));
-            socket.emit('login', {
-              id: userid,
-              users: users,
-              rooms : rooms,
-              publicChannels: publicChannels,
-              publicKey: dbUser.Pubkey,
-              privateKey: dbUser.Privkey,
-              iv: dbUser.IV
-            });
-          });
-          socket.broadcast.emit("user_state_change", db_user(dbUser));
-        }
+    const dbUser = await db.getUserByName(username);
+    if(!dbUser) {
+      return socket.emit('login', {
+        error: 'Invalid password'
       });
-    })
+    }
+    if(isActive(dbUser.UserID)) {
+      return socket.emit('login', {
+        error: 'Already logged in'
+      });
+    }
+    crypto.scrypt(data.password, Buffer.from(dbUser.Salt, 'hex'), 64, (err, derivedKey) => {
+      if(err) throw err;
+      if(derivedKey.toString('hex') != dbUser.Password) {
+        socket.emit('login', {
+          error: 'Invalid password'
+        });
+      } else {
+        loggedIn = true;
+        userid = dbUser.UserID;
+        socketmap[userid] = socket;
+        Promise.all([
+          getChannelsForUser(userid),
+          db.getPublicChannels(),
+          db.getUsers()
+        ]).then(([rooms, publics, dbUsers]) => {
+          const publicChannels = publics.map(db_room);
+          const users = dbUsers.map(db_user);
+          rooms.forEach((room) => socket.join('room' + room.id));
+          socket.emit('login', {
+            id: userid,
+            users: users,
+            rooms : rooms,
+            publicChannels: publicChannels,
+            publicKey: dbUser.Pubkey,
+            privateKey: dbUser.Privkey,
+            iv: dbUser.IV
+          });
+        });
+        socket.broadcast.emit('user_state_change', db_user(dbUser));
+      }
+    });
   });
 
   /////////////////
@@ -304,7 +284,7 @@ io.on('connection', (socket) => {
       delete socketmap[userid];
       loggedIn = false;
       db.getUserById(userid).then((user) => {
-        socket.broadcast.emit("user_state_change", db_user(user));
+        socket.broadcast.emit('user_state_change', db_user(user));
       });
     }
   });

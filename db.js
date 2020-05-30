@@ -1,7 +1,8 @@
-var sqlite3 = require('sqlite3').verbose();
-var sqlite = require('sqlite');
+"use strict";
+const sqlite3 = require('sqlite3').verbose();
+const sqlite = require('sqlite');
 
-var database;
+let database;
 
 module.exports = {
   openDatabase: async () => {
@@ -18,10 +19,8 @@ module.exports = {
 
   /* User */
   addUser: async (username, password, salt, iv, pubkey, privkey) => {
-    var created = await database.run("INSERT INTO Users(Username, Password, Salt, IV, Pubkey, Privkey)\
+    return database.run("INSERT INTO Users(Username, Password, Salt, IV, Pubkey, Privkey)\
       VALUES (?, ?, ?, ?, ?, ?);", username, password, salt, iv, JSON.stringify(pubkey), privkey);
-    await database.run("INSERT INTO Participants(ChannelID, UserID) SELECT ChannelID, ? FROM Channels WHERE ForceJoin = 1;", created.lastID);
-    return created;
   },
 
   getUserByName: async (username) => {
@@ -44,6 +43,10 @@ module.exports = {
 
   getPublicChannels: async () => {
     return database.all("SELECT * FROM Channels WHERE Type = 'O';");
+  },
+
+  getForceChannels: async () => {
+    return database.all("SELECT * FROM Channels WHERE ForceJoin = TRUE;");
   },
 
   getDirectChannel: async (user1, user2) => {

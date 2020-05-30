@@ -1,3 +1,4 @@
+'use strict';
 function escape(str) {
   return str.replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -15,8 +16,8 @@ $(function() {
   const $usernameLabel = $('#user-name');
   const $userList      = $('#user-list');
   const $roomList      = $('#room-list');
-  const $uta           = $("#usersToAdd");
-  const $channelJoins  = $("#channelJoins");
+  const $uta           = $('#usersToAdd');
+  const $channelJoins  = $('#channelJoins');
 
   let connected = false;
   let username;
@@ -44,9 +45,9 @@ $(function() {
     var user = $('#username').val();
     var pass = $('#password').val();
     if(user == '') {
-        return error("Username required");
+        return error('Username required');
     } else if(pass == '') {
-        return error("Password required");
+        return error('Password required');
     }
     deriveSecrets(user, pass).then((res) => {
       username = user;
@@ -80,7 +81,7 @@ $(function() {
     for (let [uid, user] of Object.entries(users)) {
       if (userid !== user.id) {
         $userList.append(`
-          <li onclick="setDirectRoom(this)" data-direct="${user.id}" class="${user.active ? "online" : "offline"}">${escape(user.username)}</li>
+          <li onclick="setDirectRoom(this)" data-direct="${user.id}" class="${user.active ? 'online' : 'offline'}">${escape(user.username)}</li>
         `);
         // append it also to the add user list
         $uta.append(`
@@ -162,8 +163,8 @@ function updateChannelList() {
     $messages.empty();
     room.history.forEach(m => addChatMessage(m));
 
-    $userList.find('li').removeClass("active");
-    $roomList.find('li').removeClass("active");
+    $userList.find('li').removeClass('active');
+    $roomList.find('li').removeClass('active');
 
     if (room.direct) {
       const idx = room.members.indexOf(userid) == 0 ? 1 : 0;
@@ -171,16 +172,16 @@ function updateChannelList() {
       setDirectRoomHeader(user);
 
       $userList.find(`li[data-direct="${user}"]`)
-        .addClass("active")
-        .removeClass("unread")
+        .addClass('active')
+        .removeClass('unread')
         .attr('data-room', room.id);
 
     } else {
-      $('#channel-name').text("#" + room.name);
+      $('#channel-name').text('#' + room.name);
       $('#channel-description').text(`👤 ${room.members.length} | ${room.description}`);
-      $roomList.find(`li[data-room=${room.id}]`).addClass("active").removeClass("unread");
+      $roomList.find(`li[data-room=${room.id}]`).addClass('active').removeClass('unread');
     }
-    $('.roomAction').css('visibility', (room.direct || room.forceMembership) ? "hidden" : "visible");
+    $('.roomAction').css('visibility', (room.direct || room.forceMembership) ? 'hidden' : 'visible');
   }
   window.setRoom = setRoom;
 
@@ -196,8 +197,8 @@ function updateChannelList() {
   }
 
   window.setDirectRoom = (el) => {
-    const user = el.getAttribute("data-direct");
-    const room = el.getAttribute("data-room");
+    const user = el.getAttribute('data-direct');
+    const room = el.getAttribute('data-room');
 
     if (room) {
       setRoom(parseInt(room));
@@ -218,8 +219,8 @@ function updateChannelList() {
 
   function addChatMessage(msg) {
     let time = new Date(msg.time).toLocaleTimeString('en-US', { hour12: false, 
-                                                        hour  : "numeric", 
-                                                        minute: "numeric"});
+                                                        hour  : 'numeric', 
+                                                        minute: 'numeric'});
 
     $messages.append(`
       <div class="message">
@@ -237,16 +238,16 @@ function updateChannelList() {
 
   function messageNotify(msg) {
     $userList.find(`li[data-direct="${msg.userid}"]`).addClass('unread');
-    $roomList.find(`li[data-room=${msg.room}]`).addClass("unread");
+    $roomList.find(`li[data-room=${msg.room}]`).addClass('unread');
   }
 
 
   function addChannel() {
-    const name = $("#inp-channel-name").val();
-    const description = $("#inp-channel-description").val();
-    const private = $('#inp-private').is(':checked');
+    const name = $('#inp-channel-name').val();
+    const description = $('#inp-channel-description').val();
+    const isPrivate = $('#inp-private').is(':checked');
 
-    socket.emit('add_channel', {name: name, description: description, private: private});
+    socket.emit('add_channel', {name: name, description: description, private: isPrivate});
   }
   window.addChannel = addChannel;
 
@@ -351,12 +352,16 @@ function updateChannelList() {
   socket.on('add_public_channel', addPublicChannel);
 
   socket.on('update_room', data => {
+    console.log('ROOM');
+    console.log(data);
     updateRoom(data);
     if (data.moveto)
       setRoom(data.id);
   });
 
   socket.on('update_members', data => {
+    console.log('MEMBERS');
+    console.log(data);
     updateMembers(data);
     if (data.room === currentRoom.id)
         setRoom(data.room);
