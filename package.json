@@ -12,11 +12,12 @@
     "express": "^4.17.1",
     "helmet": "^3.22.0",
     "nunjucks": "^3.2.1",
+    "rate-limiter-flexible": "^2.1.6",
     "socket.io": "^2.3.0",
     "sqlite": "^4.0.7",
     "sqlite3": "^4.2.0"
   },
   "scripts": {
-    "start": "node index.js"
+    "start": "([ -f ./db.db ] || sqlite3 db.db < create.sql) && node index.js"
   }
 }

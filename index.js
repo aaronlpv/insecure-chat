@@ -9,9 +9,13 @@ const csurf        = require('csurf')
 const path         = require('path');
 const server       = require('http').createServer(app);
 const io           = require('socket.io')(server);
+const {RateLimiterMemory}  = require('rate-limiter-flexible');
 const port         = process.env.PORT || 3000;
 const crypto       = require('crypto');
 const db           = require('./db.js');
+
+// 1 login attempt per IP per second
+const rateLimiter = new RateLimiterMemory({ points: 1, duration: 1 });
 
 db.openDatabase();
 
@@ -37,6 +41,7 @@ server.listen(port, () => {
 app.use(express.static(path.join(__dirname, 'public'), {extensions:['html']}));
 app.set('views', path.join(__dirname, 'views'));
 
+// Nunjucks template setup (for CSRF)
 nunjucks.configure('views', {
   express: app,
   autoescape: true
@@ -159,6 +164,7 @@ function isActive(userid) {
 }
 
 io.on('connection', (socket) => {
+  let ip = socket.request.connection.remoteAddress;
   let loggedIn = false;
   let username;
   let userid;
@@ -245,6 +251,14 @@ io.on('connection', (socket) => {
   socket.on('join', async data => {
     if (loggedIn || !data.username || !data.password) 
       return;
+
+    try {
+      await rateLimiter.consume(ip);
+    } catch {
+      return socket.emit('login', {
+        error: 'Slow down'
+      });
+    }
 
     username = data.username;
     const dbUser = await db.getUserByName(username);
