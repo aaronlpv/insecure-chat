@@ -1,14 +1,17 @@
 'use strict';
 // Setup basic express server
-const express = require('express');
-const app     = express();
-const helmet  = require('helmet');
-const path    = require('path');
-const server  = require('http').createServer(app);
-const io      = require('socket.io')(server);
-const port    = process.env.PORT || 3000;
-const crypto  = require('crypto');
-const db      = require('./db.js');
+const express      = require('express');
+const app          = express();
+const nunjucks     = require('nunjucks');
+const helmet       = require('helmet');
+const cookieParser = require('cookie-parser');
+const csurf        = require('csurf')
+const path         = require('path');
+const server       = require('http').createServer(app);
+const io           = require('socket.io')(server);
+const port         = process.env.PORT || 3000;
+const crypto       = require('crypto');
+const db           = require('./db.js');
 
 db.openDatabase();
 
@@ -21,6 +24,8 @@ process.on('SIGINT', () => {
 app.use(helmet());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+app.use(csurf({ cookie: true }));
 
 // Start server
 server.listen(port, () => {
@@ -30,6 +35,17 @@ server.listen(port, () => {
 
 // Routing for client-side files
 app.use(express.static(path.join(__dirname, 'public'), {extensions:['html']}));
+app.set('views', path.join(__dirname, 'views'));
+
+nunjucks.configure('views', {
+  express: app,
+  autoescape: true
+});
+app.set('view engine', 'html');
+
+app.get('/register', (req, res) => {
+  res.render('register.html', {csrfToken: req.csrfToken()});
+});
 
 app.post('/register', async (req, res) => {
   const username = req.body.username;

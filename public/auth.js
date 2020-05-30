@@ -134,6 +134,7 @@ async function decryptPrivateKey(derivKey, encPrivKey, iv) {
 }
 
 function check_password() {
+  const token    = $('meta[name="csrf"]').attr('content');
   const username = $('#username').val();
   const password = $('#password').val();
   const confirm  = $('#confirm-password').val();
@@ -146,10 +147,12 @@ function check_password() {
   }
   generateSecrets(username, password).then(async (res) => {
     const fet = await fetch('/register', {
-      method: 'POST',
+      credentials: 'same-origin',
       headers: {
-        'Content-Type': 'application/json;charset=utf-8'
+        'Content-Type': 'application/json;charset=utf-8',
+        'CSRF-Token': token
       },
+      method: 'POST',
       body: JSON.stringify(res)
     });
     return fet.json();
