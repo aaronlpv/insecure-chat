@@ -80,7 +80,7 @@ function db_room(room) {
     id: room.ChannelID,
     name: room.ChannelName,
     description: room.Description,
-    private: room.Type == 'O',
+    private: room.Type == 'C',
     direct: room.Type == 'D',
     forceMembership: room.ForceJoin
   }
@@ -99,7 +99,9 @@ async function db_room_with_details(channel, userid, moveTo) {
   const db_channel = db_room(channel);
   const [participants, msgs] = await Promise.all([db.getParticipantsByChannel(channel.ChannelID),
                                                   db.getChannelMessagesForUser(channel.ChannelID, userid)]);
-  db_channel.members = participants.map((row) => row.UserID);
+  const participantIds = participants.map((row) => row.UserID);
+  db_channel.members = participantIds;
+  db_channel.leader = participantIds.find(p => isActive(p));
   db_channel.history = msgs.map((row) => {
     return {
       userid: row.UserID,
@@ -138,10 +140,15 @@ async function addParticipant(channel, user) {
     socketmap[user].join('room' + channel);
     socketmap[user].emit('update_room', await db_room_with_details(chan, user, true));
   }
-  const participants = await db.getParticipantsByChannel(channel);
+  await updateMembers(channel);
+}
+
+async function updateMembers(channel) {
+  const participants = (await db.getParticipantsByChannel(channel)).map((row) => row.UserID);
   sendToRoom(channel, 'update_members', {
     room: channel,
-    members: participants.map((row) => row.UserID)
+    members: participants,
+    leader: participants.find(p => isActive(p))
   });
 }
 
@@ -195,8 +202,13 @@ io.on('connection', (socket) => {
           socket.emit('move_to_room', { id: dms.ChannelID });
         } else {
           const room = await createChannel(`Direct-${userid}-${req.to}`, '', 'D');
-          await addParticipant(room.lastID, userid);
-          await addParticipant(room.lastID, req.to);
+          await db.addParticipant(room.lastID, userid);
+          await db.addParticipant(room.lastID, req.to);
+          socket.join('room' + channel);
+          socketmap[user].join('room' + channel);
+          const chan = await db_room_with_details(await db.getChannel(channel), userid, true);
+          socket.emit('update_room', chan);
+          socketmap[user].emit('update_room', chan);
         }
       }
     }
@@ -235,10 +247,7 @@ io.on('connection', (socket) => {
       if(channel && channel.Type != 'D' && !channel.ForceJoin &&
           (await db.removeParticipant(req.id, userid)).changes > 0) {
         socket.leave('room' + req.id);
-        sendToRoom(req.id, 'update_members', {
-          room: req.id,
-          members: (await db.getParticipantsByChannel(req.id)).map((row) => row.UserID)
-        });
+        await updateMembers(req.id);
         socket.emit('remove_room', {id: req.id});
       }
     }

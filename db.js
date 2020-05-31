@@ -73,7 +73,7 @@ module.exports = {
   },
 
   getParticipantsByChannel: (roomid) => {
-    return database.all("SELECT UserID, TimeJoined from Participants WHERE ChannelID = ?;", roomid);
+    return database.all("SELECT UserID, TimeJoined from Participants WHERE ChannelID = ? ORDER BY TimeJoined;", roomid);
   },
 
   isParticipantInChannel: (userid, channelid) => {
