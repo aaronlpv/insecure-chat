@@ -15,77 +15,77 @@ module.exports = {
     return database.run("PRAGMA foreign_keys = ON;");
   },
 
-  closeDatabase: async () => database.close(),
+  closeDatabase: () => database.close(),
 
   /* User */
-  addUser: async (username, password, salt, iv, pubkey, privkey) => {
+  addUser: (username, password, salt, iv, pubkey, privkey) => {
     return database.run("INSERT INTO Users(Username, Password, Salt, IV, Pubkey, Privkey)\
       VALUES (?, ?, ?, ?, ?, ?);", username, password, salt, iv, JSON.stringify(pubkey), privkey);
   },
 
-  getUserByName: async (username) => {
+  getUserByName: (username) => {
     return database.get("SELECT * FROM Users WHERE Username = ?;", username);
   },
 
-  getUserById: async (uid) => {
+  getUserById: (uid) => {
     return database.get("SELECT * FROM Users WHERE UserID = ?;", uid);
   },
 
-  getUsers: async (username) => {
+  getUsers: (username) => {
     return database.all("SELECT * FROM Users;");
   },
 
   /* Channels */
-  addChannel: async (name, description, type, force) => {
+  addChannel: (name, description, type, force) => {
     return database.run("INSERT INTO Channels(ChannelName, Description, Type, ForceJoin)\
       VALUES (?, ?, ?, ?);", name, description, type, force);
   },
 
-  getPublicChannels: async () => {
+  getPublicChannels: () => {
     return database.all("SELECT * FROM Channels WHERE Type = 'O';");
   },
 
-  getForceChannels: async () => {
+  getForceChannels: () => {
     return database.all("SELECT * FROM Channels WHERE ForceJoin = TRUE;");
   },
 
-  getDirectChannel: async (user1, user2) => {
+  getDirectChannel: (user1, user2) => {
     return database.get("SELECT ChannelID FROM Participants WHERE UserID IN (?, ?)\
       AND ChannelID IN (SELECT c.ChannelID FROM Channels c WHERE Type = 'D') GROUP BY ChannelID HAVING COUNT(*) = 2;", user1, user2);
   },
 
-  getChannelsByUser: async (userid) => {
+  getChannelsByUser: (userid) => {
     return database.all("SELECT Channels.* FROM Channels INNER JOIN Participants\
       ON Channels.ChannelID = Participants.ChannelID WHERE Participants.UserID = ?", userid);
   },
 
-  getChannel: async (channelid) => {
+  getChannel: (channelid) => {
     return database.get("SELECT * FROM Channels WHERE ChannelID = ?;", channelid);
   },
 
   /* Participants */
-  addParticipant: async (roomid, userid) => {
+  addParticipant: (roomid, userid) => {
     return database.run("INSERT INTO Participants(ChannelID, UserID) VALUES (?, ?);", roomid, userid);
   },
 
-  removeParticipant: async (roomid, userid) => {
+  removeParticipant: (roomid, userid) => {
     return database.run("DELETE FROM Participants WHERE ChannelID = ? AND UserID = ?;", roomid, userid);
   },
 
-  getParticipantsByChannel: async (roomid) => {
+  getParticipantsByChannel: (roomid) => {
     return database.all("SELECT UserID, TimeJoined from Participants WHERE ChannelID = ?;", roomid);
   },
 
-  isParticipantInChannel: async (userid, channelid) => {
+  isParticipantInChannel: (userid, channelid) => {
     return database.get("SELECT * FROM Participants WHERE UserID = ? AND ChannelID = ?;", userid, channelid);
   },
 
   /* Messages */
-  addMessage: async (userid, channelid, message) => {
+  addMessage: (userid, channelid, message) => {
     return database.run("INSERT INTO Messages(UserID, ChannelID, Message) VALUES (?, ?, ?);", userid, channelid, message);
   },
 
-  getChannelMessagesForUser: async (channelid, userid) => {
+  getChannelMessagesForUser: (channelid, userid) => {
     return database.all("SELECT * FROM Messages WHERE ChannelID = ? AND \
       TimeSent > (SELECT TimeJoined FROM Participants WHERE UserID = ?);", channelid, userid);
   }

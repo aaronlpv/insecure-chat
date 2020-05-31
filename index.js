@@ -1,18 +1,18 @@
 'use strict';
 // Setup basic express server
-const express      = require('express');
-const app          = express();
-const nunjucks     = require('nunjucks');
-const helmet       = require('helmet');
-const cookieParser = require('cookie-parser');
-const csurf        = require('csurf')
-const path         = require('path');
-const server       = require('http').createServer(app);
-const io           = require('socket.io')(server);
+const express              = require('express');
+const app                  = express();
+const nunjucks             = require('nunjucks');
+const helmet               = require('helmet');
+const cookieParser         = require('cookie-parser');
+const csurf                = require('csurf')
+const path                 = require('path');
+const server               = require('http').createServer(app);
+const io                   = require('socket.io')(server);
 const {RateLimiterMemory}  = require('rate-limiter-flexible');
-const port         = process.env.PORT || 3000;
-const crypto       = require('crypto');
-const db           = require('./db.js');
+const port                 = process.env.PORT || 3000;
+const crypto               = require('crypto');
+const db                   = require('./db.js');
 
 // 1 login attempt per IP per second
 const rateLimiter = new RateLimiterMemory({ points: 1, duration: 1 });
@@ -249,35 +249,28 @@ io.on('connection', (socket) => {
   ///////////////
 
   socket.on('join', async data => {
+    const error = msg => socket.emit('login', {error: msg});
     if (loggedIn || !data.username || !data.password) 
       return;
 
     try {
       await rateLimiter.consume(ip);
     } catch {
-      return socket.emit('login', {
-        error: 'Slow down'
-      });
+      return error('Slow down');
     }
 
     username = data.username;
     const dbUser = await db.getUserByName(username);
     if(!dbUser) {
-      return socket.emit('login', {
-        error: 'Invalid password'
-      });
+      return error('Invalid password');
     }
     if(isActive(dbUser.UserID)) {
-      return socket.emit('login', {
-        error: 'Already logged in'
-      });
+      return error('Already logged in');
     }
     crypto.scrypt(data.password, Buffer.from(dbUser.Salt, 'hex'), 64, (err, derivedKey) => {
       if(err) throw err;
       if(derivedKey.toString('hex') != dbUser.Password) {
-        socket.emit('login', {
-          error: 'Invalid password'
-        });
+        return error('Invalid password');
       } else {
         loggedIn = true;
         userid = dbUser.UserID;
