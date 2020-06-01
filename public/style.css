@@ -244,3 +244,18 @@ CD2553
   display: block;
   font-size: 11pt;
 }
+
+.rekey {
+  display: flex;
+  flex-direction: row;
+  padding: 1em;
+  padding-left: 3em;
+  padding-top: 0.2em;
+  padding-bottom: 0.2em;
+  font-size: smaller;
+  color: #666;
+}
+
+.rekey:hover {
+  background-color: #fafafa;
+}

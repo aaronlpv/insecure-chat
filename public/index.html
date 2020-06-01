@@ -34,6 +34,7 @@
     <div class="channel-content">
 
         <div class="channel-header">
+          <a href="#" style="float: Right;margin-left: 1em;" class="identityAction btn btn-outline-primary btn-sm" data-toggle="modal"  data-target="#identityModal">Identity</a>
           <a href="#" style="float: Right;margin-left: 1em;" class="roomAction btn btn-outline-primary btn-sm" data-toggle="modal"  data-target="#addUserModal">Add user</a>
           <a href="#" style="float: Right;" class="roomAction btn btn-outline-danger btn-sm" onclick="leaveChannel();">Leave channel</a>
   
@@ -51,6 +52,30 @@
 
     </div>
 
+  </div>
+
+  <div class="modal fade" id="identityModal" tabindex="-1" role="dialog">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Identity check</h5>
+        </div>
+        <div class="modal-body">
+          <form>
+            <div class="form-group">
+               <label for="myidentity">My identity</label>
+               <input type="text" id="myidentity" class="form-control" placeholder="Enter username" value="lsdjfkdfj" disabled>
+            </div>
+            <div class="form-group">
+               <label for="otheridentity" id="otheridentity-header">Other Identity</label>
+               <input type="text" id="otheridentity" class="form-control" placeholder="Enter identity">
+            </div>
+            <div id="identity-output"></div>
+            <button type="button" class="btn btn-primary" id="identitycheck">Check</button>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="modal fade" id="loginModal" data-backdrop="static" data-keyboard="false" tabindex="-1" role="dialog">

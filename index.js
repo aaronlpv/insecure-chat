@@ -53,7 +53,6 @@ app.get('/register', (req, res) => {
 });
 
 app.post('/register', async (req, res) => {
-  console.log(req.body);
   const username = req.body.username;
   const password = req.body.password;
   const iv       = req.body.iv;
@@ -61,7 +60,8 @@ app.post('/register', async (req, res) => {
   const privateKeys = req.body.privateKeys;
   const rsaPublicKey = req.body.rsaPublicKey;
   const ecdsaPublicKey = req.body.ecdsaPublicKey;
-  if(!username || !password || !iv || !hmac || !privateKeys || !rsaPublicKey || !ecdsaPublicKey) {
+  const ident = req.body.ident;
+  if(!username || !password || !iv || !hmac || !privateKeys || !rsaPublicKey || !ecdsaPublicKey || !ident) {
     res.status(400).json({error: 'Bad request'});
   } else {
     const salt = crypto.randomBytes(64);
@@ -69,12 +69,12 @@ app.post('/register', async (req, res) => {
       if(err) throw err;
       try {
         var user = await db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'),
-          privateKeys, iv, hmac, ecdsaPublicKey, rsaPublicKey);
+          privateKeys, iv, hmac, ecdsaPublicKey, rsaPublicKey, ident);
       } catch {
         return res.json({error: 'Username taken'})
       }
       const new_user = await db.getUserById(user.lastID);
-      io.emit('user_state_change', db_user(new_user));
+      io.emit('update_user', db_user(new_user));
       await Promise.all((await db.getForceChannels()).map(c => addParticipant(c.ChannelID, user.lastID)));
       res.json({});
     });
@@ -98,7 +98,8 @@ function db_user(user) {
     username: user.Username,
     active: isActive(user.UserID),
     publicKey: user.PubKey,
-    signKey: user.SignKey
+    signKey: user.SignKey,
+    ident: user.Ident
   };
 }
 
@@ -110,12 +111,16 @@ async function db_room_with_details(channel, userid, moveTo) {
   db_channel.members = participantIds;
   db_channel.leader = participantIds.find(p => isActive(p));
   db_channel.history = msgs.map((row) => {
+    //const sent = await db.addMessage(userid, msg.room, msg.key, msg.iv, msg.mac, msg.time, msg.message);
     return {
       userid: row.UserID,
       message: row.Message,
       room: row.ChannelID,
       time: row.TimeReceived,
-      key: row.Key
+      key: row.Key,
+      iv: row.IV,
+      mac: row.Mac,
+      sentTime: row.TimeSent
     }
   });
   if(moveTo){
@@ -185,19 +190,21 @@ io.on('connection', (socket) => {
   let userid;
 
   socket.on('new_message', async msg => {
-    console.log(msg);
     if (loggedIn && msg.room && msg.message) {
       const time = Date.now();
       const member = await db.isParticipantInChannel(userid, msg.room);
       if(member) {
-        const sent = await db.addMessage(userid, msg.room, msg.message, msg.key);
+        const sent = await db.addMessage(userid, msg.room, msg.key, msg.iv, msg.mac, msg.time / 1000, msg.message);
         if(sent){
           sendToRoom(msg.room, 'new_message', {
             userid: userid,
             message: msg.message,
             room: msg.room,
             time: time,
-            key: msg.key
+            key: msg.key,
+            iv: msg.iv,
+            mac: msg.mac,
+            timeSent: msg.time
           });
         }
       }
@@ -215,10 +222,12 @@ io.on('connection', (socket) => {
           await db.addParticipant(room.lastID, userid);
           await db.addParticipant(room.lastID, req.to);
           socket.join('room' + room.lastID);
-          socketmap[req.to].join('room' + room.lastID);
+          if(isActive(req.to))
+            socketmap[req.to].join('room' + room.lastID);
           const chan = await db_room_with_details(await db.getChannel(room.lastID), userid, true);
           socket.emit('update_room', chan);
-          socketmap[req.to].emit('update_room', chan);
+          if(isActive(req.to))
+            socketmap[req.to].emit('update_room', chan);
         }
       }
     }
@@ -268,7 +277,6 @@ io.on('connection', (socket) => {
   ///////////////
 
   socket.on('join', async data => {
-    console.log(data);
     const error = msg => socket.emit('login', {error: msg});
     if (loggedIn || !data.username || !data.password) 
       return;
@@ -312,8 +320,8 @@ io.on('connection', (socket) => {
             iv: dbUser.IV,
             mac: dbUser.MAC
           });
+          socket.broadcast.emit('user_state_change', { id: userid, active: true });
         });
-        socket.broadcast.emit('user_state_change', db_user(dbUser));
       }
     });
   });
@@ -326,9 +334,7 @@ io.on('connection', (socket) => {
     if (loggedIn){
       delete socketmap[userid];
       loggedIn = false;
-      db.getUserById(userid).then((user) => {
-        socket.broadcast.emit('user_state_change', db_user(user));
-      });
+      socket.broadcast.emit('user_state_change', { id: userid, active: false });
     }
   });
 });

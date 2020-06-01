@@ -18,9 +18,9 @@ module.exports = {
   closeDatabase: () => database.close(),
 
   /* User */
-  addUser: (username, password, salt, privatekeys, iv, mac, signkey, pubkey) => {
-    return database.run("INSERT INTO Users(Username, Password, Salt, PrivateKeys, IV, MAC, SignKey, Pubkey)\
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?);", username, password, salt, privatekeys, iv, mac, JSON.stringify(signkey), JSON.stringify(pubkey));
+  addUser: (username, password, salt, privatekeys, iv, mac, signkey, pubkey, ident) => {
+    return database.run("INSERT INTO Users(Username, Password, Salt, PrivateKeys, IV, MAC, SignKey, Pubkey, Ident)\
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);", username, password, salt, privatekeys, iv, mac, JSON.stringify(signkey), pubkey, ident);
   },
 
   getUserByName: (username) => {
@@ -81,12 +81,13 @@ module.exports = {
   },
 
   /* Messages */
-  addMessage: (userid, channelid, message, key) => {
-    return database.run("INSERT INTO Messages(UserID, ChannelID, Message, Key) VALUES (?, ?, ?, ?);", userid, channelid, message, key);
+  addMessage: (userid, channelid, key, iv, mac, time, message) => {
+    return database.run("INSERT INTO Messages(UserID, ChannelID, Key, IV, Mac, TimeSent, Message) VALUES (?, ?, ?, ?, ?, ?, ?);", 
+      userid, channelid, key, iv, mac, time, message);
   },
 
   getChannelMessagesForUser: (channelid, userid) => {
     return database.all("SELECT *, strftime('%s', TimeSent) * 1000 AS TimeSent, strftime('%s', TimeReceived) * 1000 AS TimeReceived FROM Messages WHERE ChannelID = ? AND \
-      TimeSent >= (SELECT TimeJoined FROM Participants WHERE UserID = ?);", channelid, userid);
+      TimeSent >= (SELECT TimeJoined * 1000 FROM Participants WHERE UserID = ?);", channelid, userid);
   }
 }
