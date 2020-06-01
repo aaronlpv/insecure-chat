@@ -28,9 +28,10 @@ function error(msg) {
   $('#error').text(msg);
 }
 
+/* generate the keys we will upload to the server (private keys are of course encrypted first) */
 async function generatePublicKeys(encKey, hmacKey) {
   const enc = new TextEncoder();
-  /* generate the keys we will upload */
+ 
   const rsaKeyPairPromise = crypto.subtle.generateKey(AsymmetricAlgo, true, ['encrypt', 'decrypt']);
   const ecdsaKeyPairPromise = crypto.subtle.generateKey(SignAlgo, true, ['sign', 'verify']);
 
@@ -61,6 +62,7 @@ async function generatePublicKeys(encKey, hmacKey) {
   };
 }
 
+/* derive 3 keys from a username and password */
 async function deriveSecrets(username, password) {
   const enc = new TextEncoder();
   const salt = await crypto.subtle.digest('SHA-256', enc.encode(`INSECURE_CHAT-${username}`))
@@ -94,6 +96,7 @@ async function deriveSecrets(username, password) {
            hmacKey: await hmacKey };
 }
 
+/* decrypt the keys we sent to the server */
 async function decryptPrivateKeys(encKey, hmacKey, privateKeys, iv, mac) {
   const valid = await crypto.subtle.verify('HMAC', hmacKey, hexToBuffer(mac), new TextEncoder().encode(privateKeys+iv));
   if(!valid)
@@ -143,6 +146,7 @@ async function check_password() {
   }
 }
 
+/* simple string sign */
 async function sign(message, key) {
   return await crypto.subtle.sign({name: "ECDSA", hash: {name: "SHA-256"}}, key, new TextEncoder().encode(message));
 }

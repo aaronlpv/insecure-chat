@@ -19,6 +19,7 @@ const rateLimiter = new RateLimiterMemory({ points: 1, duration: 1 });
 
 db.openDatabase();
 
+// Close database on CTRL+C
 process.on('SIGINT', () => {
   console.log('Bye');
   db.closeDatabase();
@@ -71,6 +72,7 @@ app.post('/register', async (req, res) => {
         var user = await db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'),
           privateKeys, iv, hmac, ecdsaPublicKey, rsaPublicKey, ident);
       } catch {
+        // leak as little info as possible when something goes wrong
         return res.json({error: 'Username taken'})
       }
       const new_user = await db.getUserById(user.lastID);
@@ -81,6 +83,7 @@ app.post('/register', async (req, res) => {
   }
 })
 
+// convert a room object as received from the database to one we can send to users
 function db_room(room) {
   return {
     id: room.ChannelID,
@@ -92,6 +95,7 @@ function db_room(room) {
   }
 }
 
+// convert a user object as received from the database to one we can send to users
 function db_user(user) {
   return { 
     id: user.UserID, 
@@ -103,6 +107,9 @@ function db_user(user) {
   };
 }
 
+// convert a room object as received from the database to one we can send to users
+// this one includes participants and history
+// to be used when a user joins a new room or logs in
 async function db_room_with_details(channel, userid, moveTo) {
   const db_channel = db_room(channel);
   const [participants, msgs] = await Promise.all([db.getParticipantsByChannel(channel.ChannelID),
@@ -146,7 +153,9 @@ async function createChannel(name, description, type) {
 
 async function addParticipant(channel, user) {
   try {
-    await db.addParticipant(channel, user);
+    var newParticipant = await db.addParticipant(channel, user);
+    if(!newParticipant)
+      return;
   } catch { return; }
   if(isActive(user)){
     const chan = await db.getChannel(channel);
@@ -156,6 +165,8 @@ async function addParticipant(channel, user) {
   await updateMembers(channel);
 }
 
+
+// send a members update to a channel
 async function updateMembers(channel) {
   const participants = (await db.getParticipantsByChannel(channel)).map((row) => row.UserID);
   sendToRoom(channel, 'update_members', {
@@ -189,8 +200,10 @@ io.on('connection', (socket) => {
   let username;
   let userid;
 
+  // user sent a message
   socket.on('new_message', async msg => {
-    if (loggedIn && msg.room && msg.message) {
+    console.log(msg);
+    if (loggedIn && msg.room && msg.message && msg.time && msg.mac) {
       const time = Date.now();
       const member = await db.isParticipantInChannel(userid, msg.room);
       if(member) {
@@ -211,6 +224,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // direct room request
   socket.on('request_direct_room', async req => {
     if (loggedIn && req.to) {
       const [to_user, dms] = await Promise.all([db.getUserById(req.to), db.getDirectChannel(userid, req.to)]);
@@ -233,15 +247,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  // new channel creation
   socket.on('add_channel', async req => {
     if (loggedIn && req.name && req.private !== undefined) {
       const room = await createChannel(req.name, req.description, req.private ? 'C' : 'O');
-      await db.addParticipant(room.lastID, userid);
-      socket.join('room' + room.lastID);
-      socket.emit('update_room', await db_room_with_details(await db.getChannel(room.lastID), userid, true));
+      if(room) {
+        await db.addParticipant(room.lastID, userid);
+        socket.join('room' + room.lastID);
+        socket.emit('update_room', await db_room_with_details(await db.getChannel(room.lastID), userid, true));
+      }
     }
   });
 
+  // user joins a public channel
   socket.on('join_channel', async req => {
     if (loggedIn && req.id) {
       const channel = await db.getChannel(req.id);
@@ -251,7 +269,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  
+  // user adds another user to a channel
   socket.on('add_user_to_channel', async req => {
     if (loggedIn && req.channel && req.user) {
       if(db.isParticipantInChannel(userid, req.channel)) {
@@ -260,6 +278,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // user leaves a channel
   socket.on('leave_channel', async req => {
     if (loggedIn && req.id) {
       const channel = await db.getChannel(req.id);

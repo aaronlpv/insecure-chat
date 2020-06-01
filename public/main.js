@@ -1,4 +1,6 @@
 'use strict';
+
+// html escape, based off code from StackOverflow and Google Guava
 function escape(str) {
   return str.replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -32,7 +34,6 @@ $(function() {
   let connected = false;
   let username;
   let userid;
-  let derivedKey;
   let encKey;
   let hmacKey;
   let signKey;
@@ -46,12 +47,23 @@ $(function() {
   $('#identityModal').on('hidden.bs.modal', () => modalShowing = false)
                        .on('show.bs.modal',   () => modalShowing = true);
   $('#loginModal').on('hidden.bs.modal', () => modalShowing = false)
-                  .on('show.bs.modal',   () => 
-  {
+                  .on('show.bs.modal',   () => {
     modalShowing = true;
     setTimeout(function (){
       $('#username').focus();
-  }, 600);
+    }, 600);
+  });
+
+  $('#login-button').click(doLogin);
+
+  $('#identitycheck').click(async () => {
+    const room = currentRoom;
+    if(currentRoom.direct) {
+      const identity = $('#otheridentity').val();
+      const user = users[room.members[room.members.indexOf(userid) == 0 ? 1 : 0]];
+      var valid = await verify(hexToBuffer(identity), `${user.username}#${user.id}`, user.signKey);
+      $('#identity-output').text(valid ? 'OK' : 'BAD');
+    }
   });
 
   function doLogin() {
@@ -70,26 +82,11 @@ $(function() {
     })
   }
 
-  $('#login-button').click(doLogin);
-  $('#password').keydown(e => { if(e.which == 13) doLogin() });
+  ////////////////
+  // Encryption //
+  ////////////////
 
-  $('#identitycheck').click(async () => {
-    const room = currentRoom;
-    if(currentRoom.direct) {
-      const identity = $('#otheridentity').val();
-      const user = users[room.members[room.members.indexOf(userid) == 0 ? 1 : 0]];
-      var valid = await verify(hexToBuffer(identity), `${user.username}#${user.id}`, user.signKey);
-      $('#identity-output').text(valid ? 'OK' : 'BAD');
-    }
-  });
-
-
-  ///////////////
-  // User List //
-  ///////////////
-
-  let users = {};
-
+  // import a user's public key and signing key
   async function userImportKey(user) {
     const userPubKeyPromise = crypto.subtle.importKey(
       'jwk',
@@ -115,6 +112,7 @@ $(function() {
     }
   }
 
+  // import a symmetric room key
   async function importRoomKey(room, keyid, key) {
     rooms[room].keys[keyid] = 
       await crypto.subtle.importKey(
@@ -130,10 +128,12 @@ $(function() {
     rooms[room].lastKey = keyid;
   }
 
+  // message to signature material
   async function messageMacMaterial(msg, send) {
-    return `${msg.message}|${send ? userid : msg.userid}|${msg.room}|${send ? msg.time : msg.timeSent}|${msg.iv}`;
+    return `${msg.message}|${send ? userid : msg.userid}|${msg.room}|${send ? msg.time : msg.timeSent}|${msg.iv}|${msg.key}`;
   }
   
+  // add a MAC to a message
   async function messageAddMac(msg){
     const mac = bufferToHex(await sign(messageMacMaterial(msg, true), signKey));
     msg.mac = mac;
@@ -156,6 +156,7 @@ $(function() {
         time: Date.now() }));
   }
 
+  // decrypt message from a room's history
   async function roomDecryptMessages(room) {
     let history = [];
     for(let msg of room.history) {
@@ -169,18 +170,20 @@ $(function() {
     room.history = history;
   }
 
+  // receive a single message or rekey
   async function receiveMessage(msg, history) {
     const roomId = msg.room;
     const room = rooms[roomId];
     let msgToAdd;
 
     const valid = await verify(hexToBuffer(msg.mac), messageMacMaterial(msg, false), users[msg.userid].signKey);
-    if(!valid 
-       || Math.abs(msg.timeSent - msg.time) > 5000
-       || (room.lastTime && room.lastTime > msg.time))
+    if(!valid // signature check failed
+       || Math.abs(msg.timeSent - msg.time) > 5000 // more than 5 seconds between server receive time and message send time
+       || (room.lastTime && room.lastTime > msg.time) // message sent out of order
+       || !history && !room.members.includes(msg.userid)) // message from user not currently in the channel
       return;
 
-    if(msg.key) {
+    if(msg.key) { // regular message
       const key = room.keys[msg.key];
       if(key){
         const message = new TextDecoder().decode(
@@ -190,27 +193,34 @@ $(function() {
             hexToBuffer(msg.message)
           )
         );
-        msgToAdd = { time: msg.time, userid: msg.userid, message: message };
+        msgToAdd = { room: msg.room, time: msg.time, userid: msg.userid, message: message };
       }
-    } else {
+    } else { // rekey
       const message = JSON.parse(msg.message);
       if(message.keys[userid]){
         await importRoomKey(room.id, message.keyid, message.keys[userid]);
       }
-      msgToAdd = { time: msg.time, userid: msg.userid, rekey: true };
+      msgToAdd = { room: msg.room, time: msg.time, userid: msg.userid, rekey: true };
     }
     room.lastTime = msg.time;
 
     if(msgToAdd) {
       (history || room.history).push(msgToAdd);
       if(!history) {
-        if (roomId == currentRoom.id)
+        if (roomId == currentRoom.id) {
           addChatMessage(msgToAdd);
-        else if(!msgToAdd.rekey)
+        } else if(!msgToAdd.rekey) {
           messageNotify(msgToAdd);
+        }
       }
     }
   }
+
+  ///////////////
+  // User List //
+  ///////////////
+
+  let users = {};
 
   async function updateUsers(p_users) {
     await Promise.all(p_users.map(u => updateUser(u, false)));
@@ -414,10 +424,12 @@ $(function() {
   }
 
   function messageNotify(msg) {
-    $userList.find(`li[data-direct="${msg.userid}"]`).addClass('unread');
-    $roomList.find(`li[data-room=${msg.room}]`).addClass('unread');
+    if(rooms[msg.room].direct){
+      $userList.find(`li[data-direct="${msg.userid}"]`).addClass('unread');
+    } else {
+      $roomList.find(`li[data-room=${msg.room}]`).addClass('unread');
+    }
   }
-
 
   function addChannel() {
     const name = $('#inp-channel-name').val();
@@ -427,7 +439,6 @@ $(function() {
     socket.emit('add_channel', {name: name, description: description, private: isPrivate});
   }
   window.addChannel = addChannel;
-
 
   function joinChannel(id) {
     socket.emit('join_channel', {id: id});
@@ -468,13 +479,13 @@ $(function() {
     }
   });
 
-
+  $('#password').keydown(e => { if(e.which == 13) doLogin() });
 
   ///////////////////
   // server events //
   ///////////////////
 
-  // Whenever the server emits 'login', log the login message
+  // User login
   socket.on('login', async data => {
     if(data.error) {
       error(data.error);
@@ -494,6 +505,7 @@ $(function() {
     await userUpdate;
     const privateKeys = await privateKeyPromise;
     if(!privateKeys) {
+      // we could not import our encrypted private keys -> abort
       throw new Error('Server is misbehaving');
     }
     privateKey = privateKeys.privateKey;
@@ -511,7 +523,7 @@ $(function() {
     }
   });
 
-  // Whenever the server emits 'new message', update the chat body
+  // New chat message or rekey
   socket.on('new_message', async msg => {
     try {
       receiveMessage(msg);
@@ -520,11 +532,13 @@ $(function() {
     }
   });
 
+  // Newly registered user
   socket.on('update_user', data => {
     if(connected)
       updateUser(data, true);
   });
 
+  // User went offline or online
   socket.on('user_state_change', data => {
     if(connected){
       users[data.id].active = data.active;
@@ -532,11 +546,13 @@ $(function() {
     }
   });
   
+  // New public channel we could join
   socket.on('add_public_channel', data =>{
     if(connected)
       addPublicChannel(data);
   });
 
+  // New room we are a member of
   socket.on('update_room', async data => {
     updateRoom(data);
     await roomDecryptMessages(data);
@@ -547,6 +563,7 @@ $(function() {
       setRoom(data.id);
   });
 
+  // User left or joined a room we are member of
   socket.on('update_members', data => {
     updateMembers(data);
     if(data.leader == userid)
@@ -555,6 +572,7 @@ $(function() {
       setRoom(data.room);
   });
 
+  // We should remove a room from our list
   socket.on('remove_room', data => {
     removeRoom(data.id);
     if(Object.keys(rooms).length > 0) {
@@ -562,7 +580,10 @@ $(function() {
     }
   });
 
+  // We should focus a room
   socket.on('move_to_room', data => setRoom(data.id));
 
+
+  // open the login dialog
   $('#loginModal').modal('show');
 });

@@ -88,6 +88,6 @@ module.exports = {
 
   getChannelMessagesForUser: (channelid, userid) => {
     return database.all("SELECT *, strftime('%s', TimeSent) * 1000 AS TimeSent, strftime('%s', TimeReceived) * 1000 AS TimeReceived FROM Messages WHERE ChannelID = ? AND \
-      TimeSent >= (SELECT TimeJoined * 1000 FROM Participants WHERE UserID = ?);", channelid, userid);
+      TimeSent >= (SELECT strftime('%s', TimeJoined) FROM Participants WHERE UserID = ? AND ChannelID = ?);", channelid, userid, channelid);
   }
 }

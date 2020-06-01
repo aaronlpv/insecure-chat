@@ -1,5 +1,7 @@
 PRAGMA foreign_keys = ON;
 
+-- As this is sqlite the actual length of string-like rows does not matter
+
 CREATE TABLE Users(
        UserID       INTEGER         PRIMARY KEY AUTOINCREMENT,
        Username     VARCHAR(20)     NOT NULL UNIQUE,
@@ -16,7 +18,7 @@ CREATE TABLE Channels(
        ChannelID    INTEGER         PRIMARY KEY AUTOINCREMENT,
        ChannelName  VARCHAR(20)     NOT NULL,
        Description  VARCHAR(280),
-       Type         CHARACTER(1)    NOT NULL CHECK(Type in ('D', 'O', 'C')) DEFAULT 'O',
+       Type         CHARACTER(1)    NOT NULL CHECK(Type in ('D', 'O', 'C')) DEFAULT 'O', -- Direct, Open (public), or Closed (private)
        ForceJoin    BOOLEAN         NOT NULL DEFAULT FALSE);
 
 CREATE TABLE Participants(
