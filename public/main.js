@@ -8,9 +8,19 @@ function escape(str) {
             .replace(/\x00/g, '&#0;');
 }
 
+async function generateSymmetricKey() {
+  return JSON.stringify(
+    await crypto.subtle.exportKey(
+      "jwk",
+      await crypto.subtle.generateKey(
+        {name: "AES-CBC", length: 256},
+        true,
+        ["encrypt", "decrypt"])));
+}
+
 $(function() {
   // Initialize variables
-  const $window = $(window);
+  const $window        = $(window);
   const $messages      = $('.messages'); // Messages area
   const $inputMessage  = $('#input-message'); // Input message input box
   const $usernameLabel = $('#user-name');
@@ -41,7 +51,7 @@ $(function() {
   }, 600);
   });
 
-  $('#login-button').click(() => {
+  function doLogin() {
     var user = $('#username').val();
     var pass = $('#password').val();
     if(user == '') {
@@ -55,7 +65,10 @@ $(function() {
       derivedKey = res.key;
       socket.emit('join', {username: username, password: password});
     })
-  })
+  }
+
+  $('#login-button').click(doLogin);
+  $('#password').keydown(e => { if(e.which == 13) doLogin() });
 
 
   ///////////////
@@ -64,13 +77,29 @@ $(function() {
 
   let users = {};
 
+  async function userImportKey(user) {
+    user.publicKey = await crypto.subtle.importKey(
+      'jwk',
+      JSON.parse(user.publicKey),
+      {
+        name: 'RSA-OAEP',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
+      false,
+      ["encrypt"]
+    );
+  }
+
   function updateUsers(p_users) {
-    p_users.forEach(u => users[u.id] = u);
+    p_users.forEach(u => { users[u.id] = u; userImportKey(u); } );
     updateUserList();
   }
 
   function updateUser(user) {
     users[user.id] = user;
+    userImportKey(user);
     updateUserList();
   }
 
@@ -99,13 +128,14 @@ $(function() {
   let channels = [];
 
   function updateRooms(p_rooms) {
-    p_rooms.forEach((room) => rooms[room.id] = room);
+    p_rooms.forEach((room) => { rooms[room.id] = room; room.keys = {} });
     updateRoomList();
     updateChannelList();
   }
 
   function updateRoom(room) {
     rooms[room.id] = room;
+    room.keys = {};
     updateRoomList();
     updateChannelList();
   }
@@ -130,25 +160,25 @@ $(function() {
     }
   }
 
-function addPublicChannel(data) {
-  channels.push(data);
-  updateChannelList();
-}
+  function addPublicChannel(data) {
+    channels.push(data);
+    updateChannelList();
+  }
 
-function updatePublicChannels(p_channels) {
-  channels = p_channels;
-  updateChannelList();
-}
+  function updatePublicChannels(p_channels) {
+    channels = p_channels;
+    updateChannelList();
+  }
 
-function updateChannelList() {
-  $channelJoins.empty();
-  channels.forEach((chan) => {
-    if (!rooms[chan.id]) 
-      $channelJoins.append(`
-        <button type="button" class="list-group-item list-group-item-action" data-dismiss="modal" onclick="joinChannel(${chan.id})">${escape(chan.name)}</button>
-      `);
-  })
-}
+  function updateChannelList() {
+    $channelJoins.empty();
+    channels.forEach((chan) => {
+      if (!rooms[chan.id]) 
+        $channelJoins.append(`
+          <button type="button" class="list-group-item list-group-item-action" data-dismiss="modal" onclick="joinChannel(${chan.id})">${escape(chan.name)}</button>
+        `);
+    })
+  }
 
   //////////////
   // Chatting //
@@ -207,15 +237,20 @@ function updateChannelList() {
     }
   }
 
-  function sendMessage() {
+  async function sendMessage() {
     let message = $inputMessage.val();
 
     if (message && connected && currentRoom !== false) {
       $inputMessage.val('');
-      socket.emit('new_message', {message: message, room: currentRoom.id});
+      const encryptedMessage = bufferToHex(await crypto.subtle.encrypt(
+        { name: 'AES-CBC', iv: new Uint8Array(16).fill(1) }, // FIXME
+        currentRoom.keys[currentRoom.lastKey],
+        new TextEncoder().encode(message)
+      ));
+      socket.emit('new_message', 
+        { message: encryptedMessage, room: currentRoom.id, key: currentRoom.lastKey });
     }
   }
-
 
   function addChatMessage(msg) {
     let time = new Date(msg.time).toLocaleTimeString('en-US', { hour12: false, 
@@ -298,7 +333,7 @@ function updateChannelList() {
   ///////////////////
 
   // Whenever the server emits 'login', log the login message
-  socket.on('login', (data) => {
+  socket.on('login', async data => {
     console.log(data);
     if(data.error) {
       error(data.error);
@@ -309,63 +344,134 @@ function updateChannelList() {
     $('#loginModal').modal('hide');
     $usernameLabel.text(username);
 
-    decryptPrivateKey(derivedKey, data.privateKey, data.iv).then((key) => { privateKey = key; });
+    const privateKeyPromise = decryptPrivateKey(derivedKey, data.privateKey, data.iv);
 
     updateUsers(data.users);
     updateRooms(data.rooms);
     updatePublicChannels(data.publicChannels);
+
+    privateKey = await privateKeyPromise;
+    await Promise.all(data.rooms.map(async room => {
+      await roomDecryptMessages(room);
+      if(room.leader == userid) {
+        rekeyRoom(room.id);
+      }
+    }));
 
     if(Object.keys(rooms).length > 0) {
       setRoom(Object.entries(rooms)[0][1].id);
     }
   });
 
-  socket.on('update_public_channels', (data) => {
-    updatePublicChannels(data.publicChannels);
-  });
+  async function importRoomKey(room, keyid, key) {
+    rooms[room].keys[keyid] = 
+      await crypto.subtle.importKey(
+        'jwk',
+        JSON.parse(new TextDecoder().decode(
+          await crypto.subtle.decrypt(
+            {
+              name: 'RSA-OAEP',
+              modulusLength: 2048,
+              publicExponent: new Uint8Array([1, 0, 1]),
+              hash: 'SHA-256',
+            },
+            privateKey,
+            hexToBuffer(key)))),
+          { name: 'AES-CBC', length: 256 },
+        false,
+        ['encrypt', 'decrypt']);
+    rooms[room].lastKey = keyid;
+  }
 
-  // Whenever the server emits 'new message', update the chat body
-  socket.on('new_message', (msg) => {
+  async function receiveMessage(msg, history) {
     const roomId = msg.room;
     const room = rooms[roomId];
-    if (room) {
-      room.history.push(msg);
-    }
 
-    if (roomId == currentRoom.id)
-      addChatMessage(msg);
-    else
-      messageNotify(msg);
-  });
+    if(msg.key) {
+      const key = room.keys[msg.key];
+      const message = new TextDecoder().decode(
+        await crypto.subtle.decrypt(
+          { name: 'AES-CBC', iv: new Uint8Array(16).fill(1) }, // FIXME
+          key,
+          hexToBuffer(msg.message)
+        )
+      );
+      const actual_msg = { time: msg.time, userid: msg.userid, message: message, room: roomId };
+      (history || room.history).push(actual_msg);
 
-  socket.on('update_user', data => {
-    const room = rooms[data.room];
-    if (room) {
-      room.members = data.members;
+      if(!history) {
+        if (roomId == currentRoom.id)
+          addChatMessage(actual_msg);
+        else
+          messageNotify(actual_msg);
+      }
+    } else {
+      const message = JSON.parse(msg.message);
+      if(message.keys[userid]){
+        await importRoomKey(room.id, message.keyid, message.keys[userid]);
+      }
       
-      if (room === currentRoom)
-        setRoom(data.room);
     }
+  }
+
+  // Whenever the server emits 'new message', update the chat body
+  socket.on('new_message', async msg => {
+    console.log(msg);
+    receiveMessage(msg);
   });
 
   socket.on('user_state_change', updateUser);
   
   socket.on('add_public_channel', addPublicChannel);
 
-  socket.on('update_room', data => {
+  socket.on('update_room', async data => {
     console.log('ROOM');
     console.log(data);
     updateRoom(data);
+    await roomDecryptMessages(data);
+    if(data.leader == userid) {
+      rekeyRoom(data.id);
+    }
     if (data.moveto)
       setRoom(data.id);
   });
+
+  async function rekeyRoom(room) {
+    const key = await generateSymmetricKey();
+    const keys = {};
+    for(let member of rooms[room].members) {
+      keys[member] = bufferToHex(
+        await crypto.subtle.encrypt(
+          {
+            name: 'RSA-OAEP',
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: 'SHA-256',
+          },
+          users[member].publicKey,
+          new TextEncoder('utf-8').encode(key)));
+    }
+    socket.emit('new_message', 
+      { message: JSON.stringify({ keyid: Math.floor(Math.random() * 100000), keys: keys }), 
+        room: room });
+  }
+
+  async function roomDecryptMessages(room) {
+    let history = [];
+    for(let msg of room.history){
+      await receiveMessage(msg, history);
+    }
+    room.history = history;
+  }
 
   socket.on('update_members', data => {
     console.log('MEMBERS');
     console.log(data);
     updateMembers(data);
+    if(data.leader == userid)
+      rekeyRoom(data.room);
     if (data.room === currentRoom.id)
-        setRoom(data.room);
+      setRoom(data.room);
   });
 
   socket.on('remove_room', data => {

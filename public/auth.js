@@ -16,6 +16,10 @@ function error(msg) {
   $('#error').text(msg);
 }
 
+async function generateSecrets2(username, password) {
+
+}
+
 // generate an RSA key pair
 async function generateKeyPair() {
   return window.crypto.subtle.generateKey({
@@ -25,7 +29,7 @@ async function generateKeyPair() {
       hash: 'SHA-256',
     },
     true,
-    ['encrypt', 'decrypt']);
+    ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']);
 }
 
 // derive a key from a password and a (string) salt with PBKDF2
@@ -129,7 +133,7 @@ async function decryptPrivateKey(derivKey, encPrivKey, iv) {
       hash: 'SHA-256',
     },
     false,
-    ['decrypt']
+    ['decrypt', 'unwrapKey']
   );
 }
 

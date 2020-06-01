@@ -81,12 +81,12 @@ module.exports = {
   },
 
   /* Messages */
-  addMessage: (userid, channelid, message) => {
-    return database.run("INSERT INTO Messages(UserID, ChannelID, Message) VALUES (?, ?, ?);", userid, channelid, message);
+  addMessage: (userid, channelid, message, key) => {
+    return database.run("INSERT INTO Messages(UserID, ChannelID, Message, Key) VALUES (?, ?, ?, ?);", userid, channelid, message, key);
   },
 
   getChannelMessagesForUser: (channelid, userid) => {
-    return database.all("SELECT * FROM Messages WHERE ChannelID = ? AND \
-      TimeSent > (SELECT TimeJoined FROM Participants WHERE UserID = ?);", channelid, userid);
+    return database.all("SELECT *, strftime('%s', TimeSent) * 1000 AS TimeSent, strftime('%s', TimeReceived) * 1000 AS TimeReceived FROM Messages WHERE ChannelID = ? AND \
+      TimeSent >= (SELECT TimeJoined FROM Participants WHERE UserID = ?);", channelid, userid);
   }
 }

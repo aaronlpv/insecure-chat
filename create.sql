@@ -26,7 +26,11 @@ CREATE TABLE Messages(
        MessageID    INTEGER         PRIMARY KEY AUTOINCREMENT,
        UserID       INTEGER         NOT NULL REFERENCES Users(UserID),
        ChannelID    INTEGER         NOT NULL REFERENCES Channels(ChannelID),
+       Key          INTEGER         ,
+       IV           VARCHAR(1)      ,
+       Mac          VARCHAR(1)      ,
        TimeSent     INTEGER         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       TimeReceived INTEGER         NOT NULL DEFAULT CURRENT_TIMESTAMP,
        Message      VARCHAR(200)    NOT NULL);
 
 INSERT INTO Channels(ChannelName, Description, Type, ForceJoin)

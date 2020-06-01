@@ -107,7 +107,8 @@ async function db_room_with_details(channel, userid, moveTo) {
       userid: row.UserID,
       message: row.Message,
       room: row.ChannelID,
-      time: row.TimeSent,
+      time: row.TimeReceived,
+      key: row.Key
     }
   });
   if(moveTo){
@@ -177,17 +178,19 @@ io.on('connection', (socket) => {
   let userid;
 
   socket.on('new_message', async msg => {
+    console.log(msg);
     if (loggedIn && msg.room && msg.message) {
       const time = Date.now();
       const member = await db.isParticipantInChannel(userid, msg.room);
       if(member) {
-        const sent = await db.addMessage(userid, msg.room, msg.message);
+        const sent = await db.addMessage(userid, msg.room, msg.message, msg.key);
         if(sent){
           sendToRoom(msg.room, 'new_message', {
             userid: userid,
             message: msg.message,
             room: msg.room,
-            time: time
+            time: time,
+            key: msg.key
           });
         }
       }
@@ -204,11 +207,11 @@ io.on('connection', (socket) => {
           const room = await createChannel(`Direct-${userid}-${req.to}`, '', 'D');
           await db.addParticipant(room.lastID, userid);
           await db.addParticipant(room.lastID, req.to);
-          socket.join('room' + channel);
-          socketmap[user].join('room' + channel);
-          const chan = await db_room_with_details(await db.getChannel(channel), userid, true);
+          socket.join('room' + room.lastID);
+          socketmap[req.to].join('room' + room.lastID);
+          const chan = await db_room_with_details(await db.getChannel(room.lastID), userid, true);
           socket.emit('update_room', chan);
-          socketmap[user].emit('update_room', chan);
+          socketmap[req.to].emit('update_room', chan);
         }
       }
     }
@@ -216,10 +219,10 @@ io.on('connection', (socket) => {
 
   socket.on('add_channel', async req => {
     if (loggedIn && req.name && req.private !== undefined) {
-      const chan = await createChannel(req.name, req.description, req.private ? 'C' : 'O');
-      if(chan) {
-        await addParticipant(chan.lastID, userid);
-      }
+      const room = await createChannel(req.name, req.description, req.private ? 'C' : 'O');
+      await db.addParticipant(room.lastID, userid);
+      socket.join('room' + room.lastID);
+      socket.emit('update_room', await db_room_with_details(await db.getChannel(room.lastID), userid, true));
     }
   });
 
