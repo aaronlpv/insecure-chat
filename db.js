@@ -18,9 +18,9 @@ module.exports = {
   closeDatabase: () => database.close(),
 
   /* User */
-  addUser: (username, password, salt, iv, pubkey, privkey) => {
-    return database.run("INSERT INTO Users(Username, Password, Salt, IV, Pubkey, Privkey)\
-      VALUES (?, ?, ?, ?, ?, ?);", username, password, salt, iv, JSON.stringify(pubkey), privkey);
+  addUser: (username, password, salt, privatekeys, iv, mac, signkey, pubkey) => {
+    return database.run("INSERT INTO Users(Username, Password, Salt, PrivateKeys, IV, MAC, SignKey, Pubkey)\
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?);", username, password, salt, privatekeys, iv, mac, JSON.stringify(signkey), JSON.stringify(pubkey));
   },
 
   getUserByName: (username) => {

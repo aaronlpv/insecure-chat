@@ -53,17 +53,23 @@ app.get('/register', (req, res) => {
 });
 
 app.post('/register', async (req, res) => {
+  console.log(req.body);
   const username = req.body.username;
   const password = req.body.password;
-  if(!username || !password) {
+  const iv       = req.body.iv;
+  const hmac     = req.body.hmac;
+  const privateKeys = req.body.privateKeys;
+  const rsaPublicKey = req.body.rsaPublicKey;
+  const ecdsaPublicKey = req.body.ecdsaPublicKey;
+  if(!username || !password || !iv || !hmac || !privateKeys || !rsaPublicKey || !ecdsaPublicKey) {
     res.status(400).json({error: 'Bad request'});
   } else {
     const salt = crypto.randomBytes(64);
     crypto.scrypt(password, salt, 64, async (err, derivedKey) => {
       if(err) throw err;
       try {
-        var user = await db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'), 
-          req.body.iv, req.body.publicKey, req.body.privateKey);
+        var user = await db.addUser(username, derivedKey.toString('hex'), salt.toString('hex'),
+          privateKeys, iv, hmac, ecdsaPublicKey, rsaPublicKey);
       } catch {
         return res.json({error: 'Username taken'})
       }
@@ -91,7 +97,8 @@ function db_user(user) {
     id: user.UserID, 
     username: user.Username,
     active: isActive(user.UserID),
-    publicKey: user.Pubkey,
+    publicKey: user.PubKey,
+    signKey: user.SignKey
   };
 }
 
@@ -261,6 +268,7 @@ io.on('connection', (socket) => {
   ///////////////
 
   socket.on('join', async data => {
+    console.log(data);
     const error = msg => socket.emit('login', {error: msg});
     if (loggedIn || !data.username || !data.password) 
       return;
@@ -300,9 +308,9 @@ io.on('connection', (socket) => {
             users: users,
             rooms : rooms,
             publicChannels: publicChannels,
-            publicKey: dbUser.Pubkey,
-            privateKey: dbUser.Privkey,
-            iv: dbUser.IV
+            privateKeys: dbUser.PrivateKeys,
+            iv: dbUser.IV,
+            mac: dbUser.MAC
           });
         });
         socket.broadcast.emit('user_state_change', db_user(dbUser));

@@ -32,9 +32,10 @@ $(function() {
   let connected = false;
   let username;
   let userid;
-  let password;
   let derivedKey;
-  let publicKey;
+  let encKey;
+  let hmacKey;
+  let signKey;
   let privateKey;
   let socket = io();
 
@@ -61,9 +62,9 @@ $(function() {
     }
     deriveSecrets(user, pass).then((res) => {
       username = user;
-      password = res.password;
-      derivedKey = res.key;
-      socket.emit('join', {username: username, password: password});
+      encKey = res.encKey;
+      hmacKey = res.hmacKey;
+      socket.emit('join', {username: username, password: res.authKey});
     })
   }
 
@@ -78,14 +79,16 @@ $(function() {
   let users = {};
 
   async function userImportKey(user) {
+    console.log("about to import");
+    console.log(user.publicKey);
     user.publicKey = await crypto.subtle.importKey(
       'jwk',
       JSON.parse(user.publicKey),
       {
-        name: 'RSA-OAEP',
-        modulusLength: 2048,
+        name: "RSA-OAEP",
+        modulusLength: 4096,
         publicExponent: new Uint8Array([1, 0, 1]),
-        hash: 'SHA-256',
+        hash: "SHA-256"
       },
       false,
       ["encrypt"]
@@ -344,13 +347,17 @@ $(function() {
     $('#loginModal').modal('hide');
     $usernameLabel.text(username);
 
-    const privateKeyPromise = decryptPrivateKey(derivedKey, data.privateKey, data.iv);
+    const privateKeyPromise = decryptPrivateKeys(encKey, hmacKey, data.privateKeys, data.iv, data.mac);
 
     updateUsers(data.users);
     updateRooms(data.rooms);
     updatePublicChannels(data.publicChannels);
 
-    privateKey = await privateKeyPromise;
+    const privateKeys = await privateKeyPromise;
+    privateKey = privateKeys.privateKey;
+    signKey = privateKeys.signKey;
+    console.log("KEYS");
+    console.log(privateKeys);
     await Promise.all(data.rooms.map(async room => {
       await roomDecryptMessages(room);
       if(room.leader == userid) {
@@ -370,10 +377,10 @@ $(function() {
         JSON.parse(new TextDecoder().decode(
           await crypto.subtle.decrypt(
             {
-              name: 'RSA-OAEP',
-              modulusLength: 2048,
+              name: "RSA-OAEP",
+              modulusLength: 4096,
               publicExponent: new Uint8Array([1, 0, 1]),
-              hash: 'SHA-256',
+              hash: "SHA-256"
             },
             privateKey,
             hexToBuffer(key)))),
@@ -443,10 +450,10 @@ $(function() {
       keys[member] = bufferToHex(
         await crypto.subtle.encrypt(
           {
-            name: 'RSA-OAEP',
-            modulusLength: 2048,
+            name: "RSA-OAEP",
+            modulusLength: 4096,
             publicExponent: new Uint8Array([1, 0, 1]),
-            hash: 'SHA-256',
+            hash: "SHA-256"
           },
           users[member].publicKey,
           new TextEncoder('utf-8').encode(key)));

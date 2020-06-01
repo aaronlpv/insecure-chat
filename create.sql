@@ -5,9 +5,11 @@ CREATE TABLE Users(
        Username     VARCHAR(20)     NOT NULL UNIQUE,
        Password     CHARACTER(256)  NOT NULL,
        Salt         CHARACTER(128)  NOT NULL,
+       PrivateKeys  VARCHAR(23)     NOT NULL,
        IV           CHARACTER(24)   NOT NULL,
-       Pubkey       CHARACTER(128)  NOT NULL,
-       Privkey      CHARACTER(2466) NOT NULL);
+       MAC          CHARACTER(24)   NOT NULL,
+       SignKey      CHARACTER(24)   NOT NULL,
+       PubKey       CHARACTER(24)   NOT NULL);
 
 CREATE TABLE Channels(
        ChannelID    INTEGER         PRIMARY KEY AUTOINCREMENT,
@@ -27,7 +29,7 @@ CREATE TABLE Messages(
        UserID       INTEGER         NOT NULL REFERENCES Users(UserID),
        ChannelID    INTEGER         NOT NULL REFERENCES Channels(ChannelID),
        Key          INTEGER         ,
-       IV           VARCHAR(1)      ,
+       IV           VARCHAR(1)      , -- FIXME
        Mac          VARCHAR(1)      ,
        TimeSent     INTEGER         NOT NULL DEFAULT CURRENT_TIMESTAMP,
        TimeReceived INTEGER         NOT NULL DEFAULT CURRENT_TIMESTAMP,

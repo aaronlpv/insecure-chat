@@ -16,128 +16,142 @@ function error(msg) {
   $('#error').text(msg);
 }
 
-async function generateSecrets2(username, password) {
-
-}
-
-// generate an RSA key pair
-async function generateKeyPair() {
-  return window.crypto.subtle.generateKey({
-      name: 'RSA-OAEP',
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: 'SHA-256',
-    },
-    true,
-    ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']);
-}
-
-// derive a key from a password and a (string) salt with PBKDF2
-async function deriveKeySalt(password, salt) {
+async function generatePublicKeys(encKey, hmacKey) {
   const enc = new TextEncoder();
-  const keyMaterialPromise = window.crypto.subtle.importKey(
-    'raw',
-    enc.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits', 'deriveKey']
-  );
-  const saltPromise = window.crypto.subtle.digest('SHA-256', enc.encode(salt));
-  return window.crypto.subtle.deriveKey({
-      name: 'PBKDF2',
-      salt: await saltPromise,
-      iterations: 100000,
-      hash: 'SHA-256'
-    },
-    await keyMaterialPromise, {
-      name: 'AES-GCM',
-      length: 256
+  /* generate the keys we will upload */
+  const rsaKeyPairPromise = crypto.subtle.generateKey(
+    {
+      name: "RSA-OAEP",
+      modulusLength: 4096,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256"
     },
     true,
-    ['encrypt', 'decrypt']
+    ["encrypt", "decrypt"]
   );
-}
+  const ecdsaKeyPairPromise = crypto.subtle.generateKey(
+    {
+      name: "ECDSA",
+      namedCurve: "P-384"
+    },
+    true,
+    ["sign", "verify"]
+  );
 
-// derive a key from a username and password
-// this key will be used to encrypt/decrypt our generated private key
-async function deriveKey(username, password) {
-  return deriveKeySalt(password, 'insecure-chat_' + username);
-}
+  const rsaPair   = await rsaKeyPairPromise;
+  const ecdsaPair = await ecdsaKeyPairPromise;
 
-// generate a password from a username and password
-// the password generated here will be presented to the server
-// this way we do not share our actual password with the server
-// and the server can prevent just anyone from retrieving our encrypted private key
-async function getPassword(username, password) {
-  const key = await deriveKeySalt(password, 'insecure-chat_pwd_' + username);
-  const exportedKey = await window.crypto.subtle.exportKey('raw', key);
-  return bufferToHex(exportedKey);
-}
+  const rsaPrivateKey = await crypto.subtle.exportKey('jwk', await rsaPair.privateKey);
+  const ecdsaPrivateKey = await crypto.subtle.exportKey('jwk', await ecdsaPair.privateKey);
+  const iv = crypto.getRandomValues(new Uint8Array(16));
+  const ivHex = bufferToHex(iv);
 
-// generate all the secrets we need at registration time
-async function generateSecrets(username, password) {
-  const deriveKeyPromise = deriveKey(username, password);
-  const generateKeyPromise = generateKeyPair();
-  const derivedKey = await deriveKeyPromise;
-  const generatedKey = await generateKeyPromise;
-
-  const publicKey = generatedKey.publicKey;
-  const privateKey = generatedKey.privateKey;
-
-  const exportedKey = await window.crypto.subtle.exportKey('pkcs8', privateKey);
-  const iv = window.crypto.getRandomValues(new Uint8Array(12));
-  const encryptedKey = await window.crypto.subtle.encrypt({
-      name: 'AES-GCM',
+  const encryptedKeys = bufferToHex(await crypto.subtle.encrypt({
+      name: 'AES-CBC',
       iv: iv
     },
-    derivedKey,
-    exportedKey
-  );
-  const exportPubKey = await window.crypto.subtle.exportKey('jwk', publicKey);
+    encKey,
+    enc.encode(JSON.stringify({rsa: rsaPrivateKey, ecdsa: ecdsaPrivateKey}))
+  ));
+  const hmac = await crypto.subtle.sign("HMAC", hmacKey, enc.encode(encryptedKeys+ivHex));
 
-  return {
-    username: username,
-    password: await getPassword(username, password),
-    publicKey: exportPubKey,
-    privateKey: bufferToHex(encryptedKey),
-    iv: bufferToHex(iv)
+  return { 
+    rsaPublicKey:   await crypto.subtle.exportKey('jwk', await rsaPair.publicKey), 
+    ecdsaPublicKey: await crypto.subtle.exportKey('jwk', await ecdsaPair.publicKey),
+    privateKeys: encryptedKeys,
+    hmac: bufferToHex(hmac),
+    iv: ivHex
   };
 }
 
-// derive the secrets from a username and password
-// used at login
 async function deriveSecrets(username, password) {
-  const derivedKeyPromise = deriveKey(username, password);
-  return {
-    password: await getPassword(username, password),
-    key: await derivedKeyPromise
-  }
+  const enc = new TextEncoder();
+
+  /* generate our local keys */
+  const salt = await crypto.subtle.digest('SHA-256', enc.encode(`INSECURE_CHAT-${username}`))
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']),
+    256
+  );
+  const hkdfKey = await crypto.subtle.importKey("raw", bits, { name: "HKDF" }, false, ["deriveKey", "deriveBits"] );
+  const authKey = crypto.subtle.deriveBits(
+    {
+        name: "HKDF",
+        salt: salt,
+        info: enc.encode("AUTH"),
+        hash: 'SHA-256',
+    },
+    hkdfKey,
+    256
+  );
+  const encKey = crypto.subtle.deriveKey(
+    {
+        name: "HKDF",
+        salt: salt,
+        info: enc.encode("ENCRYPT"),
+        hash: 'SHA-256',
+    },
+    hkdfKey,
+    {name: "AES-CBC", length: 256},
+    false,
+    [ "encrypt", "decrypt" ]
+  );
+  const hmacKey = crypto.subtle.deriveKey(
+    {
+        name: "HKDF",
+        salt: salt,
+        info: enc.encode("HMAC"),
+        hash: 'SHA-256',
+    },
+    hkdfKey,
+    {name: "HMAC", hash: "SHA-256", length: 256},
+    false,
+    [ "sign", "verify" ]
+  );
+  return { authKey: bufferToHex(await authKey),
+           encKey: await encKey,
+           hmacKey: await hmacKey };
 }
 
-// used to decrypt the private key the server sends us
-async function decryptPrivateKey(derivKey, encPrivKey, iv) {
-  encPrivKey = hexToBuffer(encPrivKey);
-  const privKey = await window.crypto.subtle.decrypt({
-      name: 'AES-GCM',
-      iv: hexToBuffer(iv)
-    },
-    derivKey,
-    encPrivKey
-  );
-  return crypto.subtle.importKey(
-    'pkcs8',
-    privKey, {
-      name: 'RSA-OAEP',
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: 'SHA-256',
+async function decryptPrivateKeys(encKey, hmacKey, privateKeys, iv, mac) {
+  const valid = await crypto.subtle.verify("HMAC", hmacKey, hexToBuffer(mac), new TextEncoder().encode(privateKeys+iv));
+  if(!valid)
+    return;
+  const decrypted = JSON.parse(new TextDecoder().decode(
+    await crypto.subtle.decrypt({ name: 'AES-CBC', iv: hexToBuffer(iv)}, encKey, hexToBuffer(privateKeys))));
+
+  const signKey = crypto.subtle.importKey("jwk", decrypted.ecdsa, 
+    {
+      name: "ECDSA",
+      namedCurve: "P-384"
     },
     false,
-    ['decrypt', 'unwrapKey']
+    ["sign"]
   );
+
+  const privateKey = crypto.subtle.importKey("jwk", decrypted.rsa, 
+    {
+      name: "RSA-OAEP",
+      modulusLength: 4096,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256"
+    },
+    false,
+    ["decrypt"]
+  );
+  return {
+    signKey: await signKey,
+    privateKey: await privateKey
+  };
 }
 
-function check_password() {
+async function check_password() {
   const token    = $('meta[name="csrf"]').attr('content');
   const username = $('#username').val();
   const password = $('#password').val();
@@ -149,23 +163,23 @@ function check_password() {
   } else if (password != confirm) {
     return error('Passwords do not match');
   }
-  generateSecrets(username, password).then(async (res) => {
-    const fet = await fetch('/register', {
-      credentials: 'same-origin',
-      headers: {
-        'Content-Type': 'application/json;charset=utf-8',
-        'CSRF-Token': token
-      },
-      method: 'POST',
-      body: JSON.stringify(res)
-    });
-    return fet.json();
-  }).then((res) => {
-    console.log(res);
-    if (!res.error) {
-      $(location).attr('href', '/');
-    } else {
-      error(res.error);
-    }
-  });
+  const secrets = await deriveSecrets(username, password);
+  const publics = await generatePublicKeys(secrets.encKey, secrets.hmacKey);
+  publics.username = username;
+  publics.password = secrets.authKey;
+  const fet = await (await fetch('/register', {
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json;charset=utf-8',
+      'CSRF-Token': token
+    },
+    method: 'POST',
+    body: JSON.stringify(publics)
+  })).json();
+  console.log(fet);
+  if (!fet.error) {
+    $(location).attr('href', '/');
+  } else {
+    error(fet.error);
+  }
 }
